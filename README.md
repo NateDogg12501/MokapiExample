@@ -15,7 +15,7 @@ different protocol, each toggleable against the real thing:
 
 This repo exists to make a case for a practice, not for a particular tool.
 mokapi is just what's used here to make the idea concrete enough to try.
-The practice: local and test environments should talk to a controlled,
+The practice: local and some test environments should talk to a controlled,
 spec-driven mock of a dependency, not to that dependency's hosted
 instance.
 
@@ -30,11 +30,11 @@ instance.
   you can't make the real dependency produce that on demand? A mock lets you
   script the exact scenario you need, instantly and repeatably, instead of
   waiting for a real failure to happen to you.
-- **Testing a scenario shouldn't require a developer or a deploy.** In this
+- **Testing a scenario shouldn't require touching code or a deploy.** In this
   demo, adding a new test case is a form in a browser — no code change, no
   restart, nothing to ship. That's the difference between "mocking is
-  technically possible" and "mocking is something the whole team, QA
-  included, actually reaches for."
+  technically possible" and "mocking is something people actually reach
+  for."
 - **A mock is only trustworthy if it can't drift from the real contract.**
   Hand-rolled fake-server code tends to quietly diverge from what the real
   API actually does over time. Generating the mock from the same spec
@@ -88,8 +88,8 @@ The fastest way to see what this is about, in order:
    `WEATHERSTACK_ACCESS_KEY` set) to show the exact same UI, unmodified,
    working against the real API — same contract, same code path.
 6. **Open `mokapi/openapi.yaml`** to close the loop: this one file is the
-   entire contract driving the mock, and it's the same shape you'd hand a
-   frontend team as documentation for the real API.
+   entire contract driving the mock, and it's the same shape you'd hand
+   anyone as documentation for the real API.
 7. **Switch to the Email tab.** Send a message with **Mokapi** selected and
    watch the **Mokapi Inbox** panel fill in with the exact Subject/From/To
    and body mokapi's mock SMTP server received — real SMTP traffic, just
