@@ -1,0 +1,25 @@
+services:
+  mokapi:
+    image: mokapi/mokapi:latest
+    ports:
+      - "${MOKAPI_DASHBOARD_PORT:-8080}:8080"   # mokapi dashboard
+      - "${MOKAPI_API_PORT:-8090}:8090"         # mocked weatherstack API
+    environment:
+      MOKAPI_PROVIDERS_FILE_DIRECTORY: /mokapi
+    volumes:
+      - ./mokapi:/mokapi
+
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    environment:
+      WEATHERSTACK_ACCESS_KEY: ${WEATHERSTACK_ACCESS_KEY:-}
+      WEATHERSTACK_BASE_URL: http://api.weatherstack.com/current
+      MOKAPI_URL: http://mokapi:8090/current
+      SCENARIOS_FILE_PATH: /mokapi-data/scenarios.json
+    volumes:
+      - ./frontend:/app/frontend:ro
+      - ./mokapi:/mokapi-data
+    depends_on:
+      - mokapi

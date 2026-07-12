@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Demo: swap a hosted weather API for a local mokapi mock with one click." />
+  <title>Mokapi Weather Demo</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='13' cy='12' r='7' fill='%232563eb'/%3E%3Cellipse cx='17' cy='21' rx='11' ry='7' fill='%235b6270'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>Weather Lookup — Hosted vs. Mokapi</h1>
+        <p class="subtitle">
+          Same UI, same API contract. Flip the source to swap the real
+          <a href="https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0" target="_blank" rel="noopener">weatherstack API</a>
+          for a local <a href="https://mokapi.io/" target="_blank" rel="noopener">mokapi</a> mock — no code changes.
+        </p>
+      </div>
+      <a class="dashboard-link" href="http://localhost:8080" target="_blank" rel="noopener">Mokapi Dashboard ↗</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" id="lookup-card">
+      <h2>Check the Weather</h2>
+      <form id="lookup-form">
+        <label for="city-input">City (US)</label>
+        <input type="text" id="city-input" name="city" placeholder="e.g. Chicago" required autocomplete="off" />
+
+        <span class="field-label">Source</span>
+        <div class="segment" role="radiogroup" aria-label="Source">
+          <label class="segment-option">
+            <input type="radio" name="source" value="mock" checked />
+            <span>Mokapi (local mock)</span>
+          </label>
+          <label class="segment-option">
+            <input type="radio" name="source" value="hosted" />
+            <span>Weatherstack (hosted)</span>
+          </label>
+        </div>
+
+        <button type="submit" id="lookup-submit">Get Weather</button>
+      </form>
+
+      <div id="lookup-result" class="result" hidden></div>
+    </section>
+
+    <section class="card" id="scenarios-card">
+      <h2>Manage Test Scenarios</h2>
+      <p class="hint">
+        Scenarios are keyed by city and drive what the mokapi mock returns for that city.
+        Saved scenarios are written to <code>mokapi/scenarios.json</code> and picked up immediately &mdash; no restart needed.
+      </p>
+
+      <form id="scenario-form">
+        <label for="scenario-city">City</label>
+        <input type="text" id="scenario-city" name="city" placeholder="e.g. Chicago" required autocomplete="off" />
+
+        <label for="scenario-response-code">Response Code</label>
+        <select id="scenario-response-code" name="responseCode">
+          <option value="200" selected>200</option>
+          <option value="400">400</option>
+        </select>
+
+        <div id="scenario-success-fields">
+          <label for="scenario-city-name">City Name</label>
+          <input type="text" id="scenario-city-name" name="cityName" placeholder="e.g. Chicago" />
+
+          <label for="scenario-temperature">Temperature (&deg;F)</label>
+          <input type="number" id="scenario-temperature" name="temperature" placeholder="e.g. 999" />
+        </div>
+
+        <div id="scenario-error-fields" hidden>
+          <label for="scenario-error-code">Error Code</label>
+          <input type="number" id="scenario-error-code" name="errorCode" placeholder="e.g. 615" />
+
+          <label for="scenario-error-info">Error Info</label>
+          <input type="text" id="scenario-error-info" name="errorInfo" placeholder="e.g. City not found" />
+        </div>
+
+        <button type="submit" id="scenario-submit">Save Scenario</button>
+      </form>
+
+      <div id="scenario-form-error" class="form-error" hidden></div>
+      <div id="scenario-form-success" class="form-success" hidden></div>
+
+      <div class="table-wrapper">
+        <table id="scenario-table">
+          <thead>
+            <tr>
+              <th>City</th>
+              <th>Response Code</th>
+              <th>Details</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="scenario-table-body"></tbody>
+        </table>
+        <p id="scenario-empty-state" class="hint" hidden>No scenarios yet — add one above.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
