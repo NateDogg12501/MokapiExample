@@ -141,6 +141,15 @@ function renderScenarioTable(scenarios) {
 
   for (const scenario of scenarios) {
     const row = document.createElement('tr')
+    row.className = 'scenario-row'
+    row.tabIndex = 0
+    row.addEventListener('click', () => selectScenario(scenario))
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        selectScenario(scenario)
+      }
+    })
 
     const cityCell = document.createElement('td')
     cityCell.textContent = scenario.city
@@ -162,7 +171,8 @@ function renderScenarioTable(scenarios) {
     const actionCell = document.createElement('td')
     const deleteBtn = document.createElement('button')
     deleteBtn.textContent = 'Delete'
-    deleteBtn.addEventListener('click', async () => {
+    deleteBtn.addEventListener('click', async (event) => {
+      event.stopPropagation()
       deleteBtn.disabled = true
       await fetch(`/api/scenarios/${encodeURIComponent(scenario.city)}`, { method: 'DELETE' })
       await loadScenarios()
@@ -172,6 +182,27 @@ function renderScenarioTable(scenarios) {
 
     scenarioTableBody.appendChild(row)
   }
+}
+
+function selectScenario(scenario) {
+  document.getElementById('scenario-city').value = scenario.city
+  scenarioResponseCode.value = String(scenario.responseCode)
+  updateScenarioFieldVisibility()
+
+  if (scenario.responseCode === 200) {
+    document.getElementById('scenario-city-name').value = scenario.cityName
+    document.getElementById('scenario-temperature').value = scenario.temperature
+    document.getElementById('scenario-error-code').value = ''
+    document.getElementById('scenario-error-info').value = ''
+  } else {
+    document.getElementById('scenario-error-code').value = scenario.errorCode
+    document.getElementById('scenario-error-info').value = scenario.errorInfo
+    document.getElementById('scenario-city-name').value = ''
+    document.getElementById('scenario-temperature').value = ''
+  }
+
+  scenarioFormError.hidden = true
+  document.getElementById('scenario-city').focus()
 }
 
 document.getElementById('city-input').focus()
