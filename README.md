@@ -46,26 +46,14 @@ instance.
 
 ## Architecture
 
-```
-                     ┌────────────────────┐
-  Browser ────────▶  │  backend (Express)  │
-  (localhost:3000)   │  serves frontend/    │
-                     │  + /api/weather      │
-                     │  + /api/scenarios    │
-                     │  + /api/email        │
-                     └─────────┬────────────┘
-        source=hosted │  source=mock  │  provider=google │ provider=mokapi
-                       │              │                  │
-        ┌──────────────┘      ┌───────┘      ┌───────────┘      │
-        ▼                     ▼              ▼                 ▼
-  api.weatherstack.com   mokapi container  smtp.gmail.com   mokapi container
-  (real API, needs       (localhost:8090,  (real inbox,     (SMTP mock on
-  a key)                 from openapi.yaml  needs Gmail      localhost:2525,
-                         + mock.js +        credentials)     from mail.yaml —
-                         scenarios.json)                     read back via
-                                                              mokapi's mail
-                                                              REST API on
-                                                              localhost:8080)
+```mermaid
+flowchart TD
+    Browser["Browser<br/>localhost:3000"] --> Backend["backend (Express)<br/>serves frontend/<br/>+ /api/weather &nbsp;+ /api/scenarios &nbsp;+ /api/email"]
+
+    Backend -->|source=hosted| Weatherstack["api.weatherstack.com<br/>real API, needs an access key"]
+    Backend -->|source=mock| Mokapi
+    Backend -->|provider=google| Gmail["smtp.gmail.com<br/>real inbox, needs Gmail credentials"]
+    Backend -->|provider=mokapi| Mokapi["mokapi container<br/>HTTP mock — localhost:8090<br/>(openapi.yaml + mock.js + scenarios.json)<br/>SMTP mock — localhost:2525 (mail.yaml)<br/>Dashboard + mail REST API — localhost:8080"]
 ```
 
 The backend never exposes which source answered a weather lookup — it
