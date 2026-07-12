@@ -1,0 +1,104 @@
+openapi: "3.0.0"
+info:
+  title: Weatherstack Current Weather (Mock)
+  version: "1.0.0"
+  description: >
+    Minimal mock of the weatherstack "current weather" endpoint,
+    modeled after https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0
+servers:
+  - url: http://localhost:8090
+paths:
+  /current:
+    get:
+      operationId: getCurrentWeather
+      summary: Get current weather for a city
+      parameters:
+        - name: access_key
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: query
+          in: query
+          required: true
+          description: City to look up (e.g. "Chicago")
+          schema:
+            type: string
+        - name: units
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [m, s, f]
+      responses:
+        "200":
+          description: Successful weather lookup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      query:
+                        type: string
+                      language:
+                        type: string
+                      unit:
+                        type: string
+                  location:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      country:
+                        type: string
+                      region:
+                        type: string
+                      timezone_id:
+                        type: string
+                  current:
+                    type: object
+                    properties:
+                      temperature:
+                        type: number
+              example:
+                request:
+                  type: City
+                  query: Chicago
+                  language: en
+                  unit: f
+                location:
+                  name: Chicago
+                  country: United States of America
+                  region: Illinois
+                  timezone_id: America/Chicago
+                current:
+                  temperature: 70
+        "400":
+          description: Weatherstack-style error response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                      type:
+                        type: string
+                      info:
+                        type: string
+              example:
+                success: false
+                error:
+                  code: 601
+                  type: mock_error
+                  info: You have not supplied a query.

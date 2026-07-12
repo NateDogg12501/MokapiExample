@@ -1,0 +1,7 @@
+mail: '1.0'
+info:
+  title: Mokapi Email Demo
+servers:
+  smtp:
+    host: :2525
+    protocol: smtp

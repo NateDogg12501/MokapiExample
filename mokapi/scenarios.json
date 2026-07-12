@@ -1,0 +1,12 @@
+{
+  "chicago": {
+    "responseCode": 200,
+    "cityName": "Chicago",
+    "temperature": 999
+  },
+  "new york": {
+    "responseCode": 400,
+    "errorCode": 123,
+    "errorInfo": "Something went wrong"
+  }
+}

@@ -1,0 +1,32 @@
+services:
+  mokapi:
+    image: mokapi/mokapi:latest
+    ports:
+      - "${MOKAPI_DASHBOARD_PORT:-8080}:8080"   # mokapi dashboard + mail/HTTP REST APIs
+      - "${MOKAPI_API_PORT:-8090}:8090"         # mocked weatherstack API
+      - "${MOKAPI_SMTP_PORT:-2525}:2525"        # mocked SMTP server (mail.yaml)
+    environment:
+      MOKAPI_PROVIDERS_FILE_DIRECTORY: /mokapi
+    volumes:
+      - ./mokapi:/mokapi
+
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    environment:
+      WEATHERSTACK_ACCESS_KEY: ${WEATHERSTACK_ACCESS_KEY:-}
+      WEATHERSTACK_BASE_URL: http://api.weatherstack.com/current
+      MOKAPI_URL: http://mokapi:8090/current
+      SCENARIOS_FILE_PATH: /mokapi-data/scenarios.json
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      MOKAPI_MAIL_SMTP_HOST: mokapi
+      MOKAPI_MAIL_SMTP_PORT: 2525
+      MOKAPI_MAIL_API_URL: http://mokapi:8080
+      MOKAPI_MAIL_SERVICE_TITLE: Mokapi Email Demo
+    volumes:
+      - ./frontend:/app/frontend:ro
+      - ./mokapi:/mokapi-data
+    depends_on:
+      - mokapi
