@@ -180,28 +180,42 @@ to `backend/src/normalize.js` to also check `body.success === false`.
 
 ## Working from multiple git worktrees
 
-Each worktree is an independent checkout, so scenarios, bind mounts, and
-Docker Compose's project name (derived from the directory name) are already
-isolated per worktree — no code changes needed there. The one thing that
-collides by default is host ports, since every worktree's `docker-compose.yml`
-maps to the same `3000`/`8080`/`8090`.
+This project is **worktree-safe**: you can have several worktrees (e.g. one
+per feature branch) each running `docker compose up` at the same time.
+Scenarios, bind mounts, and Docker Compose's project name (derived from the
+directory name) are already isolated per worktree — no setup needed there.
+The one thing that collides by default is host ports, since every worktree's
+`docker-compose.yml` maps to the same `3000`/`8080`/`8090`.
 
-To run more than one stack at once:
+**Requirement:** each worktree needs its own `.env` with a unique
+`BACKEND_PORT` / `MOKAPI_DASHBOARD_PORT` / `MOKAPI_API_PORT` before you bring
+its stack up alongside another worktree's.
+
+To make that automatic instead of manual, run the setup script once per
+worktree:
 
 ```bash
 git worktree add ../MokapiExample-feature-x feature-x
 cd ../MokapiExample-feature-x
-cp .env.example .env   # then set WEATHERSTACK_ACCESS_KEY and, if running
-                       # this alongside another worktree, override the ports:
-                       #   BACKEND_PORT=3001
-                       #   MOKAPI_DASHBOARD_PORT=8081
-                       #   MOKAPI_API_PORT=8091
+node scripts/setup-worktree-env.js   # creates .env from .env.example if
+                                      # missing, and auto-assigns ports that
+                                      # won't collide with other worktrees
 docker compose up --build
 ```
 
-Each worktree needs its own `.env` (it's gitignored, so `git worktree add`
-won't carry it over) and its own `npm install` inside `backend/` if you run
-the backend outside Docker.
+The script detects this checkout's position in `git worktree list` and
+offsets each port by `20 * position` (the primary checkout keeps the
+defaults: `3000`/`8080`/`8090`). Re-run it any time — it's idempotent and
+only touches the port variables.
+
+You'll still need to set `WEATHERSTACK_ACCESS_KEY` yourself in each
+worktree's `.env` if you want the "hosted" source there — it's gitignored,
+so `git worktree add` never carries it over — and run `npm install` inside
+`backend/` per worktree if you run the backend outside Docker.
+
+If you're driving this repo with Claude Code, it's expected to run this
+script for you automatically when it sets up a new worktree — see
+[CLAUDE.md](CLAUDE.md).
 
 ## Project layout
 

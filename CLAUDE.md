@@ -83,6 +83,19 @@ step.
   mokapi at `http://mokapi:8090/current`) uses the container port and is
   unaffected by these overrides.
 
+## Working in a git worktree
+
+**Run `node scripts/setup-worktree-env.js` automatically, without being
+asked, whenever you set up a new worktree for this repo** (e.g. right after
+`git worktree add`, before the first `docker compose up` in that worktree).
+It creates `.env` from `.env.example` if missing and assigns that worktree a
+non-colliding `BACKEND_PORT`/`MOKAPI_DASHBOARD_PORT`/`MOKAPI_API_PORT` based
+on its position in `git worktree list`. Skipping this is the main way a
+second worktree's `docker compose up` fails with "port is already
+allocated" against a stack still running in another worktree (including the
+primary checkout). The script is idempotent — safe to re-run, and a no-op
+(default ports) in the primary checkout.
+
 ## Gotchas hit during initial verification
 
 Two bugs made it past manual code review and only showed up once this ran in
