@@ -1,9 +1,9 @@
 # Mokapi Mocking Demo
 
-A small demo showing how [mokapi](https://mokapi.io/) lets you substitute
-real third-party services with a local, spec-driven mock, instead of
-hand-rolling fake servers and poking them with Postman. One UI, two tabs,
-each mocking a different protocol:
+A small demo of [mokapi](https://mokapi.io/): a local, spec-driven mock
+server that stands in for real third-party services, instead of hand-rolling
+fake servers and poking them with Postman. One UI, two tabs, each mocking a
+different protocol, each toggleable against the real thing:
 
 - **REST API tab** — [weatherstack](https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0)'s
   "current weather" endpoint, mocked from an OpenAPI spec, vs. the real
@@ -11,33 +11,38 @@ each mocking a different protocol:
 - **Email tab** — SMTP email, mocked by mokapi's built-in mail server, vs.
   real Gmail SMTP.
 
-### REST API tab
+## Why this matters
 
-A weather lookup form with a source toggle:
+This repo exists to make a case for a practice, not for a particular tool.
+mokapi is just what's used here to make the idea concrete enough to try.
+The practice: local and test environments should talk to a controlled,
+spec-driven mock of a dependency, not to that dependency's hosted
+instance.
 
-- **Mokapi (local mock)** — requests go to a mokapi container running an
-  OpenAPI spec for weatherstack's `/current` endpoint, with a JavaScript
-  handler that returns whatever you've configured as a test scenario for the
-  requested city.
-- **Weatherstack (hosted)** — requests pass through to the real weatherstack
-  API using your own access key.
-
-The frontend and backend don't know or care which one is in play — both
-paths return the same response shape, because mokapi is mocking the same
-contract weatherstack defines.
-
-### Email tab
-
-A send-an-email form (To address, body, provider) plus a live view of
-mokapi's mock inbox:
-
-- **Mokapi (local mock)** — the backend sends the email over SMTP to
-  mokapi's mock mail server. Nothing leaves your machine. The UI then polls
-  mokapi's mail REST API and displays the exact message it captured — proof
-  the email actually went through the mock SMTP protocol, not a simulated
-  success.
-- **Google (real SMTP)** — the backend sends the email for real via Gmail
-  SMTP, using credentials you supply.
+- **Test environments shouldn't depend on production.** Pointing local dev
+  or test at a real third party — or at your own production systems — means
+  every test run has a real side effect (a real email sent, a real quota
+  spent) and is only as reliable as someone else's uptime. A mock removes
+  that dependency entirely: nothing leaves your machine, nothing costs
+  anything, nothing can be down or rate-limited.
+- **You can't test what you can't trigger.** How do you check that your app
+  handles an error response, a malformed payload, or an edge-case value, if
+  you can't make the real dependency produce that on demand? A mock lets you
+  script the exact scenario you need, instantly and repeatably, instead of
+  waiting for a real failure to happen to you.
+- **Testing a scenario shouldn't require a developer or a deploy.** In this
+  demo, adding a new test case is a form in a browser — no code change, no
+  restart, nothing to ship. That's the difference between "mocking is
+  technically possible" and "mocking is something the whole team, QA
+  included, actually reaches for."
+- **A mock is only trustworthy if it can't drift from the real contract.**
+  Hand-rolled fake-server code tends to quietly diverge from what the real
+  API actually does over time. Generating the mock from the same spec
+  (OpenAPI here) you'd hand to a consumer of the real API keeps the two
+  honest with each other.
+- **None of this is specific to mokapi.** Other tools take the same
+  approach. What matters is the shift itself — from "point everything at the
+  real thing and hope" to "mock what you don't control, on purpose."
 
 ## Architecture
 
@@ -73,15 +78,43 @@ server (defined in `mokapi/mail.yaml`) alongside the HTTP mock — the backend
 sends to it over real SMTP, and reads captured messages back through
 mokapi's mail REST API.
 
-## Why this matters
+## Demo script
 
-Instead of writing a throwaway fake API server and testing against it with
-Postman, mokapi mocks *directly from the OpenAPI spec* and lets you script
-scenario-specific behavior in plain JavaScript. That means:
+The fastest way to see what this is about, in order:
 
-- The mock's contract is the same spec you'd hand to consumers of the real API.
-- Test scenarios are just data (`mokapi/scenarios.json`), not custom server code.
-- Local/CI environments never depend on network access or a real API key.
+1. **Look up "Chicago" with Mokapi selected.** You get "Success! City:
+   Chicago, Temperature: 999°F" — an obviously fake number, which is the
+   point: it proves the response came from the local mock, not a live
+   weather service.
+2. **Open the Mokapi Dashboard** (button top-right, or `localhost:8080`).
+   Show the request you just made in the live log — this is the moment that
+   makes the "we're not hand-rolling a fake server" pitch land: mokapi is a
+   real service, generating real HTTP traffic, from a spec.
+3. **Add a new scenario** in the UI for a city that doesn't exist yet:
+   Response Code `400`, Error Code `615`, Error Info `Unable to geocode this
+   location.`. Save it, then look that city up — you get the error rendering
+   immediately, no restart.
+4. **Open `mokapi/scenarios.json`** on disk and point out the scenario you
+   just added is sitting there as plain JSON — nothing magic, no database.
+5. **Toggle to Weatherstack (hosted)** and look up a real city (needs
+   `WEATHERSTACK_ACCESS_KEY` set) to show the exact same UI, unmodified,
+   working against the real API — same contract, same code path.
+6. **Open `mokapi/openapi.yaml`** to close the loop: this one file is the
+   entire contract driving the mock, and it's the same shape you'd hand a
+   frontend team as documentation for the real API.
+7. **Switch to the Email tab.** Send a message with **Mokapi** selected and
+   watch the **Mokapi Inbox** panel fill in with the exact Subject/From/To
+   and body mokapi's mock SMTP server received — real SMTP traffic, just
+   like the REST tab's real HTTP traffic, visible in the same Mokapi
+   Dashboard.
+8. **Switch Send via to Google and resend** (needs `GMAIL_USER`/
+   `GMAIL_APP_PASSWORD` set). The backend sends it for real via Gmail SMTP
+   this time — check that email account's actual inbox to confirm the
+   message arrived. Same UI, same form, same code path as step 7; only the
+   destination changed. The Mokapi Inbox panel doesn't apply here, since
+   nothing went through the mock.
+9. **Open `mokapi/mail.yaml`** to show the mail-mocking contract is just as
+   small and declarative as `openapi.yaml` was for REST.
 
 ## Prerequisites
 
@@ -204,38 +237,6 @@ The repo ships with one seeded scenario: `chicago` → 200, temperature 999°F.
    inbox at that address to see it arrive. The Mokapi Inbox panel doesn't
    apply here, since nothing went through the mock.
 
-## Demo script
-
-A suggested walkthrough for showing this to developers/QA, in order:
-
-1. **Look up "Chicago" with Mokapi selected.** You get "Success! City:
-   Chicago, Temperature: 999°F" — an obviously fake number, which is the
-   point: it proves the response came from the local mock, not a live
-   weather service.
-2. **Open the Mokapi Dashboard** (button top-right, or `localhost:8080`).
-   Show the request you just made in the live log — this is the moment that
-   makes the "we're not hand-rolling a fake server" pitch land: mokapi is a
-   real service, generating real HTTP traffic, from a spec.
-3. **Add a new scenario** in the UI for a city that doesn't exist yet:
-   Response Code `400`, Error Code `615`, Error Info `Unable to geocode this
-   location.`. Save it, then look that city up — you get the error rendering
-   immediately, no restart.
-4. **Open `mokapi/scenarios.json`** on disk and point out the scenario you
-   just added is sitting there as plain JSON — nothing magic, no database.
-5. **Toggle to Weatherstack (hosted)** and look up a real city (needs
-   `WEATHERSTACK_ACCESS_KEY` set) to show the exact same UI, unmodified,
-   working against the real API — same contract, same code path.
-6. **Open `mokapi/openapi.yaml`** to close the loop: this one file is the
-   entire contract driving the mock, and it's the same shape you'd hand a
-   frontend team as documentation for the real API.
-7. **Switch to the Email tab.** Send a message with **Mokapi** selected and
-   watch the **Mokapi Inbox** panel fill in with the exact Subject/From/To
-   and body mokapi's mock SMTP server received — real SMTP traffic, just
-   like the REST tab's real HTTP traffic, visible in the same Mokapi
-   Dashboard.
-8. **Open `mokapi/mail.yaml`** to show the mail-mocking contract is just as
-   small and declarative as `openapi.yaml` was for REST.
-
 ## Manual scenario editing
 
 `mokapi/scenarios.json` is a plain JSON flat file, keyed by lowercased city
@@ -292,47 +293,6 @@ to `backend/src/normalize.js` to also check `body.success === false`.
   app password (not your regular Gmail password) was generated at
   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 
-## Working from multiple git worktrees
-
-This project is **worktree-safe**: you can have several worktrees (e.g. one
-per feature branch) each running `docker compose up` at the same time.
-Scenarios, bind mounts, and Docker Compose's project name (derived from the
-directory name) are already isolated per worktree — no setup needed there.
-The one thing that collides by default is host ports, since every worktree's
-`docker-compose.yml` maps to the same `3000`/`8080`/`8090`/`2525`.
-
-**Requirement:** each worktree needs its own `.env` with a unique
-`BACKEND_PORT` / `MOKAPI_DASHBOARD_PORT` / `MOKAPI_API_PORT` /
-`MOKAPI_SMTP_PORT` before you bring its stack up alongside another
-worktree's.
-
-To make that automatic instead of manual, run the setup script once per
-worktree:
-
-```bash
-git worktree add ../MokapiExample-feature-x feature-x
-cd ../MokapiExample-feature-x
-node scripts/setup-worktree-env.js   # creates .env from .env.example if
-                                      # missing, and auto-assigns ports that
-                                      # won't collide with other worktrees
-docker compose up --build
-```
-
-The script detects this checkout's position in `git worktree list` and
-offsets each port by `20 * position` (the primary checkout keeps the
-defaults: `3000`/`8080`/`8090`/`2525`). Re-run it any time — it's idempotent
-and only touches the port variables.
-
-You'll still need to set `WEATHERSTACK_ACCESS_KEY` / `GMAIL_USER` /
-`GMAIL_APP_PASSWORD` yourself in each worktree's `.env` if you want the
-"hosted"/"Google" sources there — they're gitignored, so `git worktree add`
-never carries them over — and run `npm install` inside `backend/` per
-worktree if you run the backend outside Docker.
-
-If you're driving this repo with Claude Code, it's expected to run this
-script for you automatically when it sets up a new worktree — see
-[CLAUDE.md](CLAUDE.md).
-
 ## Project layout
 
 ```
@@ -343,3 +303,8 @@ mokapi/     OpenAPI spec + JS scenario handler + scenarios.json (REST mock),
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the internal contract and file-by-file notes.
+
+## License
+
+MIT — see [LICENSE](LICENSE). This is a one-off demo and isn't actively
+maintained beyond it.
