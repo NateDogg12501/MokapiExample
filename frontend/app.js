@@ -1,3 +1,25 @@
+// --- Tab navigation -----------------------------------------------------
+
+const tabButtons = document.querySelectorAll('.tab-button')
+const pageSections = {
+  rest: document.getElementById('page-rest'),
+  email: document.getElementById('page-email')
+}
+
+for (const button of tabButtons) {
+  button.addEventListener('click', () => {
+    const target = button.dataset.page
+    for (const b of tabButtons) {
+      const isActive = b === button
+      b.classList.toggle('active', isActive)
+      b.setAttribute('aria-selected', String(isActive))
+    }
+    for (const [name, section] of Object.entries(pageSections)) {
+      section.hidden = name !== target
+    }
+  })
+}
+
 const lookupForm = document.getElementById('lookup-form')
 const lookupResult = document.getElementById('lookup-result')
 const lookupSubmit = document.getElementById('lookup-submit')
@@ -207,3 +229,100 @@ function selectScenario(scenario) {
 
 document.getElementById('city-input').focus()
 loadScenarios()
+
+// --- Email sending --------------------------------------------------------
+
+const emailForm = document.getElementById('email-form')
+const emailResult = document.getElementById('email-result')
+const emailSubmit = document.getElementById('email-submit')
+const inboxRefreshBtn = document.getElementById('inbox-refresh')
+const inboxStatus = document.getElementById('inbox-status')
+const inboxEmpty = document.getElementById('inbox-empty')
+const inboxMessage = document.getElementById('inbox-message')
+
+emailForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const to = document.getElementById('email-to').value.trim()
+  const body = document.getElementById('email-body').value
+  const provider = emailForm.querySelector('input[name="provider"]:checked').value
+  if (!to) return
+
+  emailResult.hidden = true
+  setLoading(emailSubmit, true, 'Sending…')
+
+  try {
+    const res = await fetch('/api/email/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, body, provider })
+    })
+    const data = await res.json()
+    renderEmailResult(data)
+
+    if (data.status === 'success' && provider === 'mokapi') {
+      await pollMokapiInbox(to)
+    }
+  } catch (err) {
+    renderEmailResult({ status: 'error', errorInfo: `Request failed: ${err.message}` })
+  } finally {
+    setLoading(emailSubmit, false, 'Send')
+  }
+})
+
+function renderEmailResult(data) {
+  emailResult.hidden = false
+  emailResult.style.animation = 'none'
+  void emailResult.offsetWidth
+  emailResult.style.animation = ''
+
+  if (data.status === 'success') {
+    emailResult.className = 'result success'
+    emailResult.textContent = `Sent via ${data.provider === 'google' ? 'Google SMTP' : "mokapi's mock SMTP server"} to ${data.to}.`
+  } else {
+    emailResult.className = 'result error'
+    emailResult.textContent = data.errorInfo || 'Failed to send email.'
+  }
+}
+
+async function pollMokapiInbox(address) {
+  inboxStatus.textContent = 'Checking mokapi inbox…'
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const found = await checkMokapiInbox(address)
+    if (found) {
+      inboxStatus.textContent = ''
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600))
+  }
+  inboxStatus.textContent = 'Not captured yet — try Refresh in a moment.'
+}
+
+async function checkMokapiInbox(address) {
+  const res = await fetch(`/api/email/mokapi-inbox/${encodeURIComponent(address)}`)
+  const data = await res.json()
+
+  if (data.status === 'found') {
+    inboxEmpty.hidden = true
+    inboxMessage.hidden = false
+    inboxMessage.textContent = `Subject: ${data.message.subject}\nFrom: ${data.message.from}\nTo: ${data.message.to}\n\n${data.message.body}`
+    return true
+  }
+
+  if (data.status === 'error') {
+    inboxStatus.textContent = data.errorInfo
+  }
+  return false
+}
+
+inboxRefreshBtn.addEventListener('click', async () => {
+  const address = document.getElementById('email-to').value.trim()
+  if (!address) {
+    inboxStatus.textContent = 'Enter a "To" address first.'
+    return
+  }
+  inboxRefreshBtn.disabled = true
+  inboxStatus.textContent = 'Checking mokapi inbox…'
+  const found = await checkMokapiInbox(address)
+  inboxStatus.textContent = found ? '' : 'No message captured yet for this address.'
+  inboxRefreshBtn.disabled = false
+})

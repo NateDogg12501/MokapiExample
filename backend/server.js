@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { fetchWeather } from './src/weatherClient.js'
 import { normalizeWeatherResponse } from './src/normalize.js'
 import { listScenarios, upsertScenario, deleteScenario } from './src/scenarioStore.js'
+import { sendEmail, fetchMokapiInboxMessage } from './src/emailClient.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -57,6 +58,35 @@ app.put('/api/scenarios/:city', async (req, res) => {
 app.delete('/api/scenarios/:city', async (req, res) => {
     await deleteScenario(req.params.city)
     res.status(204).end()
+})
+
+app.post('/api/email/send', async (req, res) => {
+    const to = String(req.body?.to || '').trim()
+    const body = String(req.body?.body || '')
+    const provider = req.body?.provider
+
+    if (!to) {
+        return res.status(400).json({ status: 'error', errorInfo: 'Recipient email is required' })
+    }
+    if (provider !== 'google' && provider !== 'mokapi') {
+        return res.status(400).json({ status: 'error', errorInfo: 'provider must be "google" or "mokapi"' })
+    }
+
+    try {
+        await sendEmail(provider, to, body)
+        res.json({ status: 'success', provider, to })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: err.message })
+    }
+})
+
+app.get('/api/email/mokapi-inbox/:address', async (req, res) => {
+    try {
+        const message = await fetchMokapiInboxMessage(req.params.address)
+        res.json(message ? { status: 'found', message } : { status: 'empty' })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach mokapi mail API: ${err.message}` })
+    }
 })
 
 const PORT = process.env.PORT || 3000

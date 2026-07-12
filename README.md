@@ -1,11 +1,19 @@
-# Mokapi Weather Demo
+# Mokapi Mocking Demo
 
-A small demo showing how [mokapi](https://mokapi.io/) lets you substitute a
-real third-party API — [weatherstack](https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0) —
-with a local, spec-driven mock, instead of hand-rolling your own fake API and
-poking it with Postman.
+A small demo showing how [mokapi](https://mokapi.io/) lets you substitute
+real third-party services with a local, spec-driven mock, instead of
+hand-rolling fake servers and poking them with Postman. One UI, two tabs,
+each mocking a different protocol:
 
-The UI is a single weather lookup page with a source toggle:
+- **REST API tab** — [weatherstack](https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0)'s
+  "current weather" endpoint, mocked from an OpenAPI spec, vs. the real
+  hosted API.
+- **Email tab** — SMTP email, mocked by mokapi's built-in mail server, vs.
+  real Gmail SMTP.
+
+### REST API tab
+
+A weather lookup form with a source toggle:
 
 - **Mokapi (local mock)** — requests go to a mokapi container running an
   OpenAPI spec for weatherstack's `/current` endpoint, with a JavaScript
@@ -18,6 +26,19 @@ The frontend and backend don't know or care which one is in play — both
 paths return the same response shape, because mokapi is mocking the same
 contract weatherstack defines.
 
+### Email tab
+
+A send-an-email form (To address, body, provider) plus a live view of
+mokapi's mock inbox:
+
+- **Mokapi (local mock)** — the backend sends the email over SMTP to
+  mokapi's mock mail server. Nothing leaves your machine. The UI then polls
+  mokapi's mail REST API and displays the exact message it captured — proof
+  the email actually went through the mock SMTP protocol, not a simulated
+  success.
+- **Google (real SMTP)** — the backend sends the email for real via Gmail
+  SMTP, using credentials you supply.
+
 ## Architecture
 
 ```
@@ -26,21 +47,31 @@ contract weatherstack defines.
   (localhost:3000)   │  serves frontend/    │
                      │  + /api/weather      │
                      │  + /api/scenarios    │
+                     │  + /api/email        │
                      └─────────┬────────────┘
-                        source=hosted │ source=mock
-                                │      │
-                 ┌──────────────┘      └──────────────┐
-                 ▼                                     ▼
-     api.weatherstack.com                  mokapi container
-     (real API, needs a key)          (localhost:8090, from openapi.yaml
-                                        + mock.js + scenarios.json)
+        source=hosted │  source=mock  │  provider=google │ provider=mokapi
+                       │              │                  │
+        ┌──────────────┘      ┌───────┘      ┌───────────┘      │
+        ▼                     ▼              ▼                 ▼
+  api.weatherstack.com   mokapi container  smtp.gmail.com   mokapi container
+  (real API, needs       (localhost:8090,  (real inbox,     (SMTP mock on
+  a key)                 from openapi.yaml  needs Gmail      localhost:2525,
+                         + mock.js +        credentials)     from mail.yaml —
+                         scenarios.json)                     read back via
+                                                              mokapi's mail
+                                                              REST API on
+                                                              localhost:8080)
 ```
 
-The backend never exposes which source answered — it normalizes both into
-the same `{status, ...}` shape before the frontend ever sees it. Scenario
-saves from the UI write straight into `mokapi/scenarios.json`, which both
-the backend (writer) and mokapi (reader) see via the same bind-mounted host
-file, so there's no restart or polling involved.
+The backend never exposes which source answered a weather lookup — it
+normalizes both into the same `{status, ...}` shape before the frontend ever
+sees it. Scenario saves from the UI write straight into
+`mokapi/scenarios.json`, which both the backend (writer) and mokapi (reader)
+see via the same bind-mounted host file, so there's no restart or polling
+involved. For email, the same mokapi container also runs an SMTP mock
+server (defined in `mokapi/mail.yaml`) alongside the HTTP mock — the backend
+sends to it over real SMTP, and reads captured messages back through
+mokapi's mail REST API.
 
 ## Why this matters
 
@@ -56,23 +87,33 @@ scenario-specific behavior in plain JavaScript. That means:
 
 - Docker Desktop (or another Docker Engine + Compose)
 - A free [weatherstack](https://weatherstack.com/) access key — **only
-  required if you want to try the "hosted" source**. The mock source works
-  with no key at all.
+  required if you want to try the REST API tab's "hosted" source**. The
+  mock source works with no key at all.
+- A Gmail address + App Password — **only required if you want to try the
+  Email tab's "Google" option**. The "Mokapi" option works with no
+  credentials at all.
 
-## Adding your API key
+## Adding your credentials
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set:
+Edit `.env` and set whichever of these you need:
 
 ```
 WEATHERSTACK_ACCESS_KEY=your-key-here
+GMAIL_USER=you@gmail.com
+GMAIL_APP_PASSWORD=your-16-character-app-password
 ```
 
-`.env` is gitignored — the key is only ever passed into the backend
-container as an environment variable, never baked into an image or committed.
+`GMAIL_APP_PASSWORD` is **not** your normal Gmail password — it's a
+per-app password generated at
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
+which requires 2-Step Verification to be enabled on the account first.
+
+`.env` is gitignored — credentials are only ever passed into the backend
+container as environment variables, never baked into an image or committed.
 
 ## Running it
 
@@ -83,10 +124,16 @@ docker compose up --build
 Then open:
 
 - **App**: http://localhost:3000
-- **Mokapi dashboard**: http://localhost:8080 — watch live mock requests/responses in real time
-- **Mokapi mock API directly**: http://localhost:8090/current
+- **Mokapi dashboard**: http://localhost:8080 — watch live mock requests/responses in real time (both HTTP and mail)
+- **Mokapi mock weather API directly**: http://localhost:8090/current
+- **Mokapi mock SMTP server directly**: `localhost:2525` (any SMTP client)
 
 ## Using the UI
+
+Use the **REST API** / **Email** tabs at the top to switch between the two
+modules.
+
+### REST API tab
 
 1. Enter a US city and pick a source, then **Get Weather**.
    - On success you'll see a success message, the city name, and the
@@ -112,6 +159,21 @@ Then open:
 
 The repo ships with one seeded scenario: `chicago` → 200, temperature 999°F.
 
+### Email tab
+
+1. Enter a **To** address, write a **Body**, pick **Mokapi** or **Google**
+   under **Send via**, then **Send**.
+2. With **Mokapi** selected, the message is sent over real SMTP to mokapi's
+   local mock server — nothing leaves your machine. The **Mokapi Inbox**
+   panel below then automatically checks mokapi's mail API for the message
+   it just captured and displays the raw Subject/From/To/body in a
+   plain-text, monospaced box. Use **Refresh** to re-check manually (e.g. if
+   you switch the **To** address).
+3. With **Google** selected, the message is sent for real via Gmail SMTP
+   using `GMAIL_USER`/`GMAIL_APP_PASSWORD` from `.env` — check the actual
+   inbox at that address to see it arrive. The Mokapi Inbox panel doesn't
+   apply here, since nothing went through the mock.
+
 ## Demo script
 
 A suggested walkthrough for showing this to developers/QA, in order:
@@ -136,6 +198,13 @@ A suggested walkthrough for showing this to developers/QA, in order:
 6. **Open `mokapi/openapi.yaml`** to close the loop: this one file is the
    entire contract driving the mock, and it's the same shape you'd hand a
    frontend team as documentation for the real API.
+7. **Switch to the Email tab.** Send a message with **Mokapi** selected and
+   watch the **Mokapi Inbox** panel fill in with the exact Subject/From/To
+   and body mokapi's mock SMTP server received — real SMTP traffic, just
+   like the REST tab's real HTTP traffic, visible in the same Mokapi
+   Dashboard.
+8. **Open `mokapi/mail.yaml`** to show the mail-mocking contract is just as
+   small and declarative as `openapi.yaml` was for REST.
 
 ## Manual scenario editing
 
@@ -178,9 +247,20 @@ to `backend/src/normalize.js` to also check `body.success === false`.
 - **Hosted lookups fail immediately.** Confirm `.env` has
   `WEATHERSTACK_ACCESS_KEY` set and that `docker compose` picked it up
   (`docker compose config` will show the resolved value).
-- **Port already in use.** 3000, 8080, or 8090 already bound locally? Change
-  the host-side port in `docker-compose.yml` (left side of the `"host:container"`
-  mapping) — no code changes needed.
+- **Port already in use.** 3000, 8080, 8090, or 2525 already bound locally?
+  Change the host-side port in `docker-compose.yml` (left side of the
+  `"host:container"` mapping) — no code changes needed.
+- **Mokapi Inbox always shows "No message captured yet", even right after a
+  successful Mokapi send.** First hit **Refresh** once or twice — local
+  delivery is near-instant but not synchronous with the send response. If it
+  never appears, check `docker compose logs mokapi` for SMTP errors, and
+  confirm `MOKAPI_MAIL_SERVICE_TITLE` in `docker-compose.yml` still matches
+  `info.title` in `mokapi/mail.yaml` exactly (`Mokapi Email Demo`) — a
+  mismatch makes every inbox lookup silently come back empty.
+- **Google send fails immediately with a credentials error.** Confirm
+  `.env` has both `GMAIL_USER` and `GMAIL_APP_PASSWORD` set, and that the
+  app password (not your regular Gmail password) was generated at
+  [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 
 ## Working from multiple git worktrees
 
@@ -189,11 +269,12 @@ per feature branch) each running `docker compose up` at the same time.
 Scenarios, bind mounts, and Docker Compose's project name (derived from the
 directory name) are already isolated per worktree — no setup needed there.
 The one thing that collides by default is host ports, since every worktree's
-`docker-compose.yml` maps to the same `3000`/`8080`/`8090`.
+`docker-compose.yml` maps to the same `3000`/`8080`/`8090`/`2525`.
 
 **Requirement:** each worktree needs its own `.env` with a unique
-`BACKEND_PORT` / `MOKAPI_DASHBOARD_PORT` / `MOKAPI_API_PORT` before you bring
-its stack up alongside another worktree's.
+`BACKEND_PORT` / `MOKAPI_DASHBOARD_PORT` / `MOKAPI_API_PORT` /
+`MOKAPI_SMTP_PORT` before you bring its stack up alongside another
+worktree's.
 
 To make that automatic instead of manual, run the setup script once per
 worktree:
@@ -209,13 +290,14 @@ docker compose up --build
 
 The script detects this checkout's position in `git worktree list` and
 offsets each port by `20 * position` (the primary checkout keeps the
-defaults: `3000`/`8080`/`8090`). Re-run it any time — it's idempotent and
-only touches the port variables.
+defaults: `3000`/`8080`/`8090`/`2525`). Re-run it any time — it's idempotent
+and only touches the port variables.
 
-You'll still need to set `WEATHERSTACK_ACCESS_KEY` yourself in each
-worktree's `.env` if you want the "hosted" source there — it's gitignored,
-so `git worktree add` never carries it over — and run `npm install` inside
-`backend/` per worktree if you run the backend outside Docker.
+You'll still need to set `WEATHERSTACK_ACCESS_KEY` / `GMAIL_USER` /
+`GMAIL_APP_PASSWORD` yourself in each worktree's `.env` if you want the
+"hosted"/"Google" sources there — they're gitignored, so `git worktree add`
+never carries them over — and run `npm install` inside `backend/` per
+worktree if you run the backend outside Docker.
 
 If you're driving this repo with Claude Code, it's expected to run this
 script for you automatically when it sets up a new worktree — see
@@ -225,8 +307,9 @@ script for you automatically when it sets up a new worktree — see
 
 ```
 backend/    Express API + static frontend host
-frontend/   Native HTML/CSS/JS UI, no build step
-mokapi/     OpenAPI spec, JS scenario handler, scenarios.json
+frontend/   Native HTML/CSS/JS UI, no build step, tabbed REST API / Email pages
+mokapi/     OpenAPI spec + JS scenario handler + scenarios.json (REST mock),
+            mail.yaml (SMTP mock)
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the internal contract and file-by-file notes.

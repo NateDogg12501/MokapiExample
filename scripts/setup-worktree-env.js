@@ -28,7 +28,8 @@ const offset = index > 0 ? index * 20 : 0
 const ports = {
     BACKEND_PORT: 3000 + offset,
     MOKAPI_DASHBOARD_PORT: 8080 + offset,
-    MOKAPI_API_PORT: 8090 + offset
+    MOKAPI_API_PORT: 8090 + offset,
+    MOKAPI_SMTP_PORT: 2525 + offset
 }
 
 const envPath = path.join(repoRoot, '.env')
@@ -50,8 +51,8 @@ if (offset > 0) {
     console.log(
         `Worktree detected (position ${index} of ${worktreePaths.length}) — ` +
         `assigned ports backend=${ports.BACKEND_PORT}, dashboard=${ports.MOKAPI_DASHBOARD_PORT}, ` +
-        `mock=${ports.MOKAPI_API_PORT} in .env`
+        `mock=${ports.MOKAPI_API_PORT}, smtp=${ports.MOKAPI_SMTP_PORT} in .env`
     )
 } else {
-    console.log(`Primary checkout — using default ports backend=${ports.BACKEND_PORT}, dashboard=${ports.MOKAPI_DASHBOARD_PORT}, mock=${ports.MOKAPI_API_PORT} in .env`)
+    console.log(`Primary checkout — using default ports backend=${ports.BACKEND_PORT}, dashboard=${ports.MOKAPI_DASHBOARD_PORT}, mock=${ports.MOKAPI_API_PORT}, smtp=${ports.MOKAPI_SMTP_PORT} in .env`)
 }
