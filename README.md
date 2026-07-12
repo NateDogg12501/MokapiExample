@@ -105,6 +105,10 @@ Then open:
      response, so the mock never hard-fails on an unrecognized city.
    - Saving shows a brief "Saved scenario for…" confirmation, and the table
      updates immediately with color-coded response-code badges.
+   - Click any row in the table to load that scenario back into the form for
+     editing — rows highlight on hover to show they're clickable. Saving
+     again overwrites that same city's scenario (keys are lowercased city
+     names, so this is always an update-in-place, never a duplicate).
 
 The repo ships with one seeded scenario: `chicago` → 200, temperature 999°F.
 
