@@ -99,7 +99,8 @@ scenario-specific behavior in plain JavaScript. That means:
 cp .env.example .env
 ```
 
-Edit `.env` and set whichever of these you need:
+Edit `.env` and set whichever of these you need — both are optional, and
+each is independent of the other:
 
 ```
 WEATHERSTACK_ACCESS_KEY=your-key-here
@@ -107,13 +108,42 @@ GMAIL_USER=you@gmail.com
 GMAIL_APP_PASSWORD=your-16-character-app-password
 ```
 
-`GMAIL_APP_PASSWORD` is **not** your normal Gmail password — it's a
-per-app password generated at
-[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
-which requires 2-Step Verification to be enabled on the account first.
-
 `.env` is gitignored — credentials are only ever passed into the backend
 container as environment variables, never baked into an image or committed.
+
+### Getting a weatherstack access key
+
+Only needed for the REST API tab's "Weatherstack (hosted)" source.
+
+1. Go to [weatherstack.com](https://weatherstack.com/) and click **Get Free
+   API Key** (or sign up via [apilayer.com](https://apilayer.com/), which
+   also hosts weatherstack).
+2. Verify your email and log in to the dashboard.
+3. Copy the **API Access Key** shown there into `WEATHERSTACK_ACCESS_KEY`.
+   The free tier is plenty for this demo (no card required, generous
+   monthly request limit).
+
+### Getting a Gmail App Password
+
+Only needed for the Email tab's "Google (real SMTP)" option.
+
+1. Turn on **2-Step Verification** on the Google account you want to send
+   from, if it isn't already: [myaccount.google.com/security](https://myaccount.google.com/security) →
+   **2-Step Verification**. App Passwords aren't available without this.
+2. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+3. Under **App name**, type something like `Mokapi Email Demo` and click
+   **Create**.
+4. Google shows a 16-character password (four groups of four letters, e.g.
+   `abcd efgh ijkl mnop`) — copy it as-is (spaces are fine) into
+   `GMAIL_APP_PASSWORD`.
+5. Set `GMAIL_USER` to the full Gmail address of that same account (the one
+   whose App Password you just generated) — this is both the SMTP login and
+   the "from" address the demo sends as.
+
+This is **not** your normal Gmail password, and can't be used to log into
+the account itself — it only authorizes SMTP/IMAP access for this one app,
+and can be revoked independently from the same App Passwords page at any
+time without affecting your main password.
 
 ## Running it
 
