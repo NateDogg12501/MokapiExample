@@ -5,24 +5,36 @@ user-facing setup/run instructions.
 
 ## What this is
 
-A demo of using mokapi to mock two different protocols, each toggleable
-against the real thing, behind one UI with a top-level tab switch:
+A demo of using local mocks — mokapi for two protocols, localstack for a
+third — each toggleable against the real thing, behind one UI with a
+top-level tab switch:
 
 - **REST API tab** — the weatherstack "current weather" API, mocked via an
   OpenAPI spec, vs. the real hosted API.
 - **Email tab** — SMTP email, mocked via mokapi's mail spec, vs. real Gmail
   SMTP.
+- **AWS tab** — an SQS queue, mocked via a localstack container, vs. a real
+  hosted SQS queue.
 
 Runtime pieces:
 
 - `backend/` — Express app. Serves the static `frontend/` and proxies
   `/api/weather` to either the hosted weatherstack API or the local mokapi
-  container (normalizing both into one response shape), and `/api/email/*`
-  to either Gmail SMTP or mokapi's mock SMTP server.
+  container (normalizing both into one response shape), `/api/email/*` to
+  either Gmail SMTP or mokapi's mock SMTP server, and `/api/aws/*` to either
+  real AWS SQS or a local `localstack` container's mock SQS.
 - `mokapi/` — OpenAPI spec + JS handler for the weather mock (`openapi.yaml`,
   `mock.js`), plus a mail spec for the email mock (`mail.yaml`). Both files
   live in the same provider directory and mokapi auto-discovers and runs
   both mocks (HTTP + SMTP) from one container.
+- `localstack` (docker-compose service, no config files of its own) — mocks
+  AWS SQS. Unlike mokapi's spec-file-driven discovery, its queue is created
+  by a one-shot `localstack-init` service in `docker-compose.yml` (an
+  `amazon/aws-cli` container that runs `sqs create-queue` once and exits),
+  not by application code — `backend/src/sqsClient.js` only ever resolves
+  an already-existing queue, symmetric with how it treats a real AWS queue.
+  Requires `LOCALSTACK_AUTH_TOKEN` (free signup) to start at all — see
+  "Gotchas" below.
 
 ## The normalization contract
 
@@ -98,6 +110,118 @@ end-to-end the first time you touch this.
   'mokapi/smtp'`) for sending mail *from* a mokapi script, but that's not
   needed here since the backend is the one sending, not mokapi.
 
+## AWS SQS mocking facts (localstack)
+
+Queue provisioning is deliberately kept out of `backend/src/sqsClient.js`
+(the integration layer) — a one-shot `localstack-init` service in
+`docker-compose.yml` creates the localstack queue, the same way a real
+deployment's infra/setup process would create the real one. The backend's
+job is identical for both sources: resolve an already-existing queue via
+`GetQueueUrlCommand` (never `CreateQueueCommand` — the backend never
+creates a queue anywhere, local or real) and send to it. This was refactored
+from an earlier version where the backend lazily called `CreateQueueCommand`
+against localstack on first use; that version is gone, including the
+self-healing retry-on-stale-cache logic it needed (see "Gotchas" below for
+why removing that was a deliberate trade, not an oversight).
+
+Verified against live containers in Docker Desktop, including the actual
+`localstack/localstack:latest` + `LOCALSTACK_AUTH_TOKEN` path (a free
+account's token, supplied by the repo's user) — the license activates
+successfully on the freemium tier (`Successfully requested and activated
+new license ...:freemium`), `localstack-init` creates the queue, and
+send/read-back both work exactly as designed. Earlier in development, before
+a real token was available, the mechanism was first verified using the
+free, pre-license-merge `localstack/localstack:4.4.0` image as a stand-in
+(swapped in temporarily and reverted) — a valid test since `4.4.0` and
+`latest` implement the same SQS API, differing only in the license check at
+container startup. Both runs confirm the same facts:
+
+- **`localstack-init` correctly creates the queue and exits 0**, gated on
+  `localstack`'s `healthcheck` via `depends_on: condition: service_healthy`.
+  Confirmed live: `docker compose logs localstack-init` shows the created
+  `QueueUrl` on success.
+- **The backend's `GetQueueUrlCommand`-only resolution works against a
+  queue it never created itself** — confirmed live: sent and read back a
+  message through a queue that only `localstack-init` had touched.
+- **The `QueueUrl` localstack returns uses a
+  `sqs.<region>.localhost.localstack.cloud` domain, not the `localstack`
+  hostname the client's `endpoint` is configured with — this does NOT
+  break anything.** The SDK v3 client always connects to its configured
+  `endpoint`; `QueueUrl` is just a request parameter, not something the
+  SDK re-parses to decide where to connect. Confirmed live: sends worked
+  fine despite the mismatched-looking URL. Worth knowing so a future
+  reader doesn't "fix" this by trying to rewrite the returned URL.
+- **Recovery after `docker compose restart localstack` (independent of
+  `backend`) is `docker compose up localstack-init` — confirmed live, and
+  it does NOT require restarting `backend` too.** localstack's queue state
+  is in-memory only, so restarting it alone wipes the queue; re-running
+  `localstack-init` recreates it. The backend's already-cached `QueueUrl`
+  (from before the restart) becomes valid again automatically once the
+  queue exists again, because SQS queue URLs are deterministic by name —
+  confirmed live, no code change or backend restart needed.
+- **Known rough edge, confirmed live, not fixed on purpose**: the *first*
+  send that fails after an independent `localstack` restart surfaces the
+  raw AWS SDK error message ("The specified queue does not exist.")
+  instead of `sqsClient.js`'s friendlier wrapped message. This happens
+  because that first failure occurs inside `SendMessageCommand` itself
+  (using an already-cached, now-stale `QueueUrl`, so `resolveQueueUrl`'s
+  own `GetQueueUrlCommand` call — and its friendly-error wrapping — never
+  even runs). Not fixed, because doing so would mean re-adding
+  cache-invalidation/retry logic to `sqsClient.js`, which is exactly the
+  integration-layer complexity this refactor was meant to remove.
+- `SERVICES=sqs` in `docker-compose.yml`'s `localstack` service env is
+  still current/functional as of localstack 4.4.0 and the calendar-
+  versioned 2026.x line — restricts which AWS services localstack loads.
+- Real AWS: the "queue not found" error's `.name` varies across SDK
+  versions/protocols (`QueueDoesNotExist`, `QueueDoesNotExistException`, or
+  the legacy `AWS.SimpleQueueService.NonExistentQueue`) — the code checks
+  all three, sharing the exact same `resolveQueueUrl()` helper (and error
+  handling) that's confirmed working for localstack above. Not yet
+  exercised against a real AWS account in this sandbox (no real
+  credentials available).
+- Reading a message back from the localstack queue
+  (`fetchLocalstackMessages`) is **destructive** — `ReceiveMessageCommand`
+  followed by `DeleteMessageCommand`, matching a real consumer, not a peek.
+  This was changed from an earlier non-destructive `VisibilityTimeout: 0`
+  peek design (see "Gotchas" below for why) once the UI moved from showing
+  a single message to a short history. Since a destructive read leaves
+  nothing in the queue to re-check, `sqsClient.js` keeps its own in-memory
+  buffer of the last `MAX_HISTORY` (5) consumed messages, newest first,
+  and every call to `fetchLocalstackMessages()` does one `ReceiveMessage`
+  attempt, appends what it finds (if anything) to the buffer, and returns
+  the whole buffer plus a `receivedNew` flag the frontend uses to know
+  whether *this* poll found something new vs. is just re-displaying
+  existing history. **Confirmed live**: sending N messages and repeatedly
+  hitting the read-back endpoint drains them one at a time in order, the
+  history accumulates correctly newest-first, and the 5-item cap holds
+  (sent 7, saw exactly the last 5). This buffer is process-memory only —
+  it resets on backend restart, same as the queue-URL cache above.
+- Credentials are handled very differently for the two sources, on purpose:
+  the localstack client uses hardcoded `test`/`test` (localstack's own
+  documented dummy-credential convention; it doesn't validate them, but the
+  SDK still requires *some* value) and an explicit `endpoint`/`region` —
+  never the default credential chain, so real AWS credentials present in
+  the container env can never accidentally hit the local mock. The real-AWS
+  client uses `new SQSClient({})` with no explicit config at all, relying
+  entirely on the SDK v3 default provider chain — which is why
+  `docker-compose.yml` passes `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+  `AWS_SESSION_TOKEN`/`AWS_REGION` through from `.env` into the backend
+  container's environment (the SDK reads them from there, not from the
+  host directly). Only `AWS_REGION` is passed, not `AWS_DEFAULT_REGION` —
+  AWS SDK v3 for JavaScript's documented region-resolution chain only lists
+  `AWS_REGION`. `localstack-init` (the `amazon/aws-cli` service) uses its
+  own separate `test`/`test` env vars for the same reason — it's a
+  different container/tool (AWS CLI, not the JS SDK), so it needs its own
+  credential config even though the values are identical.
+- Don't conflate the `test`/`test` SQS *API* credentials above with
+  `LOCALSTACK_AUTH_TOKEN` (see "Gotchas" below) — they're unrelated layers.
+  `test`/`test` is what SQS clients (both the backend's and
+  `localstack-init`'s) send on every SQS call, and localstack never checks
+  it. `LOCALSTACK_AUTH_TOKEN` is checked once, by the localstack
+  *container* itself, before it'll start serving any requests at all — get
+  that wrong and every SQS call fails the same way regardless of the API
+  credentials being correct.
+
 ## Scenario data flow
 
 1. UI form (`frontend/index.html` + `app.js`) → `PUT /api/scenarios/:city`.
@@ -125,15 +249,19 @@ step.
   (follow the `data-page` / `id="page-*"` pattern), wire it into
   `pageSections` in `app.js`'s tab-navigation block, and give it its own
   card(s) — the tab-switching JS is generic over however many pages exist in
-  `pageSections`.
+  `pageSections`. The AWS tab is the concrete example of this: a
+  `data-page="aws"` button, `#page-aws` section, `aws` entry in
+  `pageSections`, and its own send + read-back cards mirroring the Email
+  tab's structure.
 - **Ports**: mokapi dashboard/mail-API is 8080, mock weather API is 8090
   (set via the `servers` entry in `openapi.yaml`), mock SMTP is 2525 (set in
-  `mail.yaml`), backend/UI is 3000. These are host-side mappings only,
-  overridable per-checkout via `BACKEND_PORT`, `MOKAPI_DASHBOARD_PORT`,
-  `MOKAPI_API_PORT`, `MOKAPI_SMTP_PORT` in `.env` (see `docker-compose.yml`)
-  — this is what lets multiple git worktrees run their stacks concurrently.
-  Container-internal traffic (e.g. backend reaching mokapi at
-  `http://mokapi:8090/current` or `mokapi:2525` for SMTP) uses the container
+  `mail.yaml`), localstack SQS edge is 4566, backend/UI is 3000. These are
+  host-side mappings only, overridable per-checkout via `BACKEND_PORT`,
+  `MOKAPI_DASHBOARD_PORT`, `MOKAPI_API_PORT`, `MOKAPI_SMTP_PORT`,
+  `LOCALSTACK_PORT` in `.env` (see `docker-compose.yml`) — this is what lets
+  multiple git worktrees run their stacks concurrently. Container-internal
+  traffic (e.g. backend reaching mokapi at `http://mokapi:8090/current`,
+  `mokapi:2525` for SMTP, or `localstack:4566` for SQS) uses the container
   port and is unaffected by these overrides.
 
 ## Working in a git worktree
@@ -143,7 +271,8 @@ asked, whenever you set up a new worktree for this repo** (e.g. right after
 `git worktree add`, before the first `docker compose up` in that worktree).
 It creates `.env` from `.env.example` if missing and assigns that worktree a
 non-colliding `BACKEND_PORT`/`MOKAPI_DASHBOARD_PORT`/`MOKAPI_API_PORT`/
-`MOKAPI_SMTP_PORT` based on its position in `git worktree list`. Skipping this is the main way a
+`MOKAPI_SMTP_PORT`/`LOCALSTACK_PORT` based on its position in `git worktree
+list`. Skipping this is the main way a
 second worktree's `docker compose up` fails with "port is already
 allocated" against a stack still running in another worktree (including the
 primary checkout). The script is idempotent — safe to re-run, and a no-op
@@ -191,6 +320,85 @@ real run, by analogy with the gotchas above:
   section above on why `host: :2525`, not `host: localhost:2525`, matters
   in `mail.yaml`).
 
+The AWS tab's SQS mocking (`docker-compose.yml`'s `localstack` service,
+`backend/src/sqsClient.js`) has since been run against a live Docker Desktop
+environment. One real bug turned up (item 3), plus two rounds of deliberate
+architectural change made after initial verification (items 4–6, kept here
+rather than rewritten away so a future refactor has the full history and
+doesn't rediscover the same trade-offs from scratch):
+
+3. **`localstack/localstack:latest` requires a free-tier auth token and
+   refuses to start without one.** As of March 23 2026, localstack merged
+   its Community and Pro Docker images into one — `:latest` now runs a
+   license check on startup and exits with "License activation failed...
+   No credentials were found in the environment" unless
+   `LOCALSTACK_AUTH_TOKEN` is set, which requires signing up for a free
+   localstack.cloud account (no paid plan needed). `docker-compose.yml`'s
+   `localstack` service passes `LOCALSTACK_AUTH_TOKEN` through from `.env`
+   (see `.env.example`) — this is now a required credential for the AWS
+   tab's "Localstack" option specifically, unlike every other "local mock"
+   option in this repo, which needs zero credentials. An earlier version of
+   this fix pinned the image to `localstack/localstack:4.4.0` (the last
+   pre-merge Community-only release) to avoid the signup entirely; that was
+   reverted in favor of `:latest` + the token, to stay on a maintained
+   image rather than accumulate version drift. If localstack changes its
+   licensing again, `docs.localstack.cloud/aws/getting-started/auth-token/`
+   documents the current policy. **Confirmed live with a real free-account
+   token**: startup logs show `Successfully requested and activated new
+   license ...:freemium`, and the full send/read-back flow works
+   end-to-end on the unpinned `:latest` image.
+4. **The cached localstack `QueueUrl` went stale after restarting the
+   `localstack` container independently of `backend`.** localstack's queue
+   state is in-memory only (no persistence configured), so a
+   `docker compose restart localstack` wipes the queue the backend had
+   already created and cached — every subsequent send/read then failed with
+   `err.name === 'QueueDoesNotExist'` until the backend itself was also
+   restarted. **Originally fixed** in `backend/src/sqsClient.js` by
+   wrapping every localstack call in a helper that caught exactly that
+   error, cleared the cache, and retried once (re-running `CreateQueue`).
+   **That fix was deliberately removed** in a later pass — see item 5
+   below for why, and "AWS SQS mocking facts" above for how the queue gets
+   created and how to recover now instead.
+5. **Architectural change: queue creation moved from `sqsClient.js` into
+   docker-compose, on purpose, trading away the self-healing behavior from
+   item 4.** The call was made that provisioning a queue's existence isn't
+   the integration layer's job — same reasoning as why the real-AWS path
+   never creates a queue either, just applied consistently to both sources
+   now. `docker-compose.yml`'s `localstack-init` service (an `amazon/aws-cli`
+   one-shot container, gated on `localstack`'s healthcheck) creates the
+   queue instead; `sqsClient.js` only ever calls `GetQueueUrlCommand` for
+   both sources. The trade: if `localstack` restarts independently of
+   `backend`, there's no more automatic retry-and-recreate — recovery is a
+   manual (if simple) `docker compose up localstack-init`, confirmed live
+   to work without needing to restart `backend` too (see "AWS SQS mocking
+   facts" for why: SQS queue URLs are deterministic by name, so the
+   backend's stale cache becomes valid again once the queue exists again).
+   This was a deliberate, discussed trade-off, not an oversight — flagging
+   it here so a future refactor doesn't "fix" it by reintroducing the
+   removed retry logic without reconsidering the trade first.
+
+6. **Read-back changed from a non-destructive peek to a destructive
+   read + in-memory history.** The original design used
+   `VisibilityTimeout: 0` specifically so a single displayed message
+   survived repeated Refreshes without being consumed. Once the UI needed
+   to show a scrollable history of the last 5 messages instead of just the
+   latest one, a true peek no longer made sense — there was nothing about
+   "don't consume" that helped once the backend needed to track history
+   itself anyway. Switched to `ReceiveMessageCommand` + `DeleteMessageCommand`
+   (matching a real consumer) with the history kept in an in-memory buffer
+   in `sqsClient.js` — see "AWS SQS mocking facts" above. This also
+   incidentally resolves the earlier documented "known limitation" that
+   sending twice via Localstack without refreshing made the next Refresh's
+   result non-deterministic: destructive reads mean each read/poll drains
+   exactly one message in the order the queue delivers them, so the
+   history now reflects real send order rather than "whichever message a
+   non-destructive peek happened to see."
+
+`GetQueueUrl`-based resolution (for both sources, sharing one code path)
+and the destructive-read-plus-history design were both confirmed working
+as designed — see "AWS SQS mocking facts" above for specifics on what was
+actually run live versus what's still inferred from shared code.
+
 ## Things intentionally left simple
 
 - No auth/validation of `access_key` in the mock — the mock exists to test
@@ -210,3 +418,26 @@ real run, by analogy with the gotchas above:
   receive mail in the mock, matching the free-text "To" field. Real Gmail
   SMTP still requires `GMAIL_USER`/`GMAIL_APP_PASSWORD` since that's a real
   external service.
+- Standard SQS queue, not FIFO — a FIFO queue would require a `.fifo`-
+  suffixed name and a `MessageGroupId` on every send, adding complexity for
+  no real benefit here: reads are destructive and one-at-a-time, so the
+  backend's history buffer reflects actual drain order regardless of
+  strict FIFO guarantees.
+- Localstack message history is capped at 5 and kept in `sqsClient.js`'s
+  process memory, not persisted — by design, matching this repo's
+  "no database" philosophy elsewhere. It resets on backend restart; that's
+  fine for a demo.
+- No queue auto-provisioning in application code, for **either** source —
+  `backend/src/sqsClient.js` only ever calls `GetQueueUrl`, never
+  `CreateQueue`. For real AWS, provisioning is the user's job (see
+  README's "Provisioning the real SQS queue"). For localstack, it's
+  `docker-compose.yml`'s one-shot `localstack-init` service, not the
+  backend — a deliberate choice to keep the integration layer from
+  concerning itself with whether its dependencies exist, treating that as
+  an infra/test-setup concern instead (see "Gotchas" item 5).
+- No automatic recovery if `localstack` is restarted independently of the
+  rest of the stack — `docker compose up localstack-init` fixes it (see
+  "Gotchas" item 5 and "AWS SQS mocking facts" for why that's sufficient
+  without also restarting `backend`), but it's a manual step, not
+  something the app retries on its own. This was a deliberate trade against
+  an earlier self-healing version of `sqsClient.js`.

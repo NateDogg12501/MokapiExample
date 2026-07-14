@@ -10,6 +10,44 @@ services:
     volumes:
       - ./mokapi:/mokapi
 
+  localstack:
+    # As of March 23 2026, localstack/localstack:latest merged Community and
+    # Pro into one image that requires a LOCALSTACK_AUTH_TOKEN (free account
+    # signup at app.localstack.cloud) even to start — see LOCALSTACK_AUTH_TOKEN
+    # in .env.example for how to get one.
+    image: localstack/localstack:latest
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    environment:
+      SERVICES: sqs
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: creates the SQS queue localstack serves, then exits. Queue
+  # provisioning lives here (infra), not in backend/src/sqsClient.js
+  # (integration layer) — the backend only ever resolves an existing queue
+  # for both sources, symmetric with how the real AWS queue must already
+  # exist. Uses the same SQS_QUEUE_NAME as the backend so there's one
+  # source of truth for the queue name. Re-run this with
+  # `docker compose up localstack-init` (or a plain `docker compose up`) if
+  # you ever restart the `localstack` container on its own — its queue
+  # state is in-memory only, so a restart wipes it and this needs to run
+  # again to recreate it.
+  localstack-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    command: ["--endpoint-url=http://localstack:4566", "sqs", "create-queue", "--queue-name", "${SQS_QUEUE_NAME:-mokapi-demo-queue}"]
+
   backend:
     build: ./backend
     ports:
@@ -25,8 +63,24 @@ services:
       MOKAPI_MAIL_SMTP_PORT: 2525
       MOKAPI_MAIL_API_URL: http://mokapi:8080
       MOKAPI_MAIL_SERVICE_TITLE: Mokapi Email Demo
+      SQS_QUEUE_NAME: ${SQS_QUEUE_NAME:-mokapi-demo-queue}
+      LOCALSTACK_SQS_ENDPOINT: http://localstack:4566
+      LOCALSTACK_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
     volumes:
       - ./frontend:/app/frontend:ro
       - ./mokapi:/mokapi-data
     depends_on:
+      # Deliberately NOT depends_on localstack-init here (even though it's
+      # what actually provisions the AWS tab's local queue) — backend must
+      # keep starting cleanly regardless of whether localstack ever becomes
+      # usable (e.g. no LOCALSTACK_AUTH_TOKEN set), the same way the REST
+      # and Email tabs work independently of whether their own credentials
+      # are configured. If localstack-init hasn't finished yet, the AWS
+      # tab's Localstack option just errors until it does — see
+      # backend/src/sqsClient.js's "queue does not exist" message.
       - mokapi
+      - localstack
