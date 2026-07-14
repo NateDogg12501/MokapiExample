@@ -1,15 +1,20 @@
 # Mokapi Mocking Demo
 
-A small demo of [mokapi](https://mokapi.io/): a local, spec-driven mock
-server that stands in for real third-party services, instead of hand-rolling
-fake servers and poking them with Postman. One UI, two tabs, each mocking a
-different protocol, each toggleable against the real thing:
+A small demo of using local, spec- or config-driven mocks to stand in for
+real third-party services, instead of hand-rolling fake servers and poking
+them with Postman. Two tools illustrate the same practice for different
+protocols — [mokapi](https://mokapi.io/) for REST and SMTP,
+[localstack](https://www.localstack.cloud/) for AWS — behind one UI, three
+tabs, each toggleable against the real thing:
 
 - **REST API tab** — [weatherstack](https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0)'s
-  "current weather" endpoint, mocked from an OpenAPI spec, vs. the real
-  hosted API.
+  "current weather" endpoint, mocked from an OpenAPI spec via mokapi, vs. the
+  real hosted API.
 - **Email tab** — SMTP email, mocked by mokapi's built-in mail server, vs.
   real Gmail SMTP.
+- **AWS tab** — sends a message to an SQS queue, mocked locally via
+  [localstack](https://www.localstack.cloud/)'s AWS emulator, vs. a real
+  hosted SQS queue.
 
 ## Why this matters
 
@@ -48,12 +53,15 @@ instance.
 
 ```mermaid
 flowchart TD
-    Browser["Browser<br/>localhost:3000"] --> Backend["backend (Express)<br/>serves frontend/<br/>+ /api/weather &nbsp;+ /api/scenarios &nbsp;+ /api/email"]
+    Browser["Browser<br/>localhost:3000"] --> Backend["backend (Express)<br/>serves frontend/<br/>+ /api/weather &nbsp;+ /api/scenarios &nbsp;+ /api/email &nbsp;+ /api/aws"]
 
     Backend -->|source=hosted| Weatherstack["api.weatherstack.com<br/>real API, needs an access key"]
     Backend -->|source=mock| Mokapi
     Backend -->|provider=google| Gmail["smtp.gmail.com<br/>real inbox, needs Gmail credentials"]
     Backend -->|provider=mokapi| Mokapi["mokapi container<br/>HTTP mock — localhost:8090<br/>(openapi.yaml + mock.js + scenarios.json)<br/>SMTP mock — localhost:2525 (mail.yaml)<br/>Dashboard + mail REST API — localhost:8080"]
+    Backend -->|source=aws| AwsSqs["real AWS SQS<br/>needs AWS credentials + a pre-existing queue"]
+    Backend -->|source=localstack| Localstack["localstack container<br/>SQS mock — localhost:4566<br/>queue named by SQS_QUEUE_NAME"]
+    LocalstackInit["localstack-init<br/>(one-shot, docker compose up)"] -.creates queue.-> Localstack
 ```
 
 The backend never exposes which source answered a weather lookup — it
@@ -64,7 +72,16 @@ see via the same bind-mounted host file, so there's no restart or polling
 involved. For email, the same mokapi container also runs an SMTP mock
 server (defined in `mokapi/mail.yaml`) alongside the HTTP mock — the backend
 sends to it over real SMTP, and reads captured messages back through
-mokapi's mail REST API.
+mokapi's mail REST API. For AWS, a separate `localstack` container mocks
+SQS — its queue is created by a one-shot `localstack-init` service on
+`docker compose up`, not by the backend, so the backend's job for both
+sources is identical: resolve an already-existing queue (never create one)
+and send to it, using localstack's dummy credentials for the mock and the
+AWS SDK's default credential chain for the real one. Reading messages back
+for review only exists for the Localstack source. It's destructive (matches
+a real consumer — reading removes the message from the queue), so the
+backend keeps a short in-memory history of the last 5 messages it's
+consumed to display, since the queue itself has nothing left to re-check.
 
 ## Demo script
 
@@ -103,6 +120,19 @@ The fastest way to see what this is about, in order:
    nothing went through the mock.
 9. **Open `mokapi/mail.yaml`** to show the mail-mocking contract is just as
    small and declarative as `openapi.yaml` was for REST.
+10. **Switch to the AWS tab.** Send a message with **Localstack** selected
+    (needs `LOCALSTACK_AUTH_TOKEN` set) and watch the **Localstack Queue**
+    panel fill in with the exact message body localstack's mock SQS queue
+    received — same "proof, not simulated" beat as the REST and Email tabs,
+    this time for a completely different tool (localstack instead of
+    mokapi), making the point that the practice matters more than any one
+    tool.
+11. **Switch Send via to AWS (real SQS) and resend** (needs
+    `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION` set, and a real
+    queue named to match `SQS_QUEUE_NAME` already provisioned). The backend
+    sends it for real via the AWS SDK this time — check the AWS SQS console
+    to confirm the message arrived. The Localstack Queue panel doesn't apply
+    here, since nothing went through the mock.
 
 ## Prerequisites
 
@@ -113,6 +143,12 @@ The fastest way to see what this is about, in order:
 - A Gmail address + App Password — **only required if you want to try the
   Email tab's "Google" option**. The "Mokapi" option works with no
   credentials at all.
+- A free [localstack](https://app.localstack.cloud/) account + auth token —
+  **required for the AWS tab's "Localstack" option**. As of March 2026,
+  localstack's Docker image won't start at all without one (no paid plan
+  needed, just a signup).
+- Real AWS credentials + a pre-existing SQS queue — **only required if you
+  want to try the AWS tab's "AWS (real SQS)" option**.
 
 ## Adding your credentials
 
@@ -120,13 +156,22 @@ The fastest way to see what this is about, in order:
 cp .env.example .env
 ```
 
-Edit `.env` and set whichever of these you need — both are optional, and
-each is independent of the other:
+Edit `.env` and set whichever of these you need — each is independent of the
+others. All are optional **except** `LOCALSTACK_AUTH_TOKEN`, which is
+required if you want the AWS tab's "Localstack" option to work at all (the
+`localstack` container won't start without it); everything else only
+gates one specific "real" option and the rest of the app works fine
+without it:
 
 ```
 WEATHERSTACK_ACCESS_KEY=your-key-here
 GMAIL_USER=you@gmail.com
 GMAIL_APP_PASSWORD=your-16-character-app-password
+SQS_QUEUE_NAME=mokapi-demo-queue
+LOCALSTACK_AUTH_TOKEN=your-localstack-token
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+AWS_REGION=us-east-1
 ```
 
 `.env` is gitignored — credentials are only ever passed into the backend
@@ -166,6 +211,39 @@ the account itself — it only authorizes SMTP/IMAP access for this one app,
 and can be revoked independently from the same App Passwords page at any
 time without affecting your main password.
 
+### Getting a localstack auth token
+
+Required for the AWS tab's "Localstack" option — since March 2026,
+localstack's Docker image runs a license check on startup and won't start
+without a valid token, even for community-tier services like SQS. No paid
+plan needed.
+
+1. Go to [app.localstack.cloud](https://app.localstack.cloud/) and sign up
+   for a free account.
+2. In the web app, generate an auth token (under account/API settings).
+3. Copy it into `LOCALSTACK_AUTH_TOKEN` in `.env`.
+
+### Provisioning the real SQS queue
+
+Only needed for the AWS tab's "AWS (real SQS)" option. The backend never
+creates a queue in a real AWS account — that's a deliberate choice to avoid
+an app quietly provisioning billable resources as a side effect. (The
+Localstack option's queue is also never created by the backend — it's
+provisioned by a one-shot `localstack-init` service in `docker-compose.yml`
+instead, so queue provisioning is consistently an infra concern for both
+sources, not something the integration layer does at request time.)
+
+1. In the AWS account/region you want to use, create a standard (non-FIFO)
+   SQS queue named to match `SQS_QUEUE_NAME` in `.env` (default
+   `mokapi-demo-queue`) — via the SQS console, `aws sqs create-queue
+   --queue-name mokapi-demo-queue`, or your infra-as-code tool of choice.
+2. Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` in
+   `.env` to credentials with `sqs:GetQueueUrl` and `sqs:SendMessage`
+   permission on that queue — a static access key from an IAM user's
+   "Security credentials" tab is enough; leave `AWS_SESSION_TOKEN` blank
+   for that. Only set `AWS_SESSION_TOKEN` if you're using temporary
+   credentials instead (an assumed role, SSO, or an MFA session token).
+
 ## Running it
 
 ```bash
@@ -178,11 +256,13 @@ Then open:
 - **Mokapi dashboard**: http://localhost:8080 — watch live mock requests/responses in real time (both HTTP and mail)
 - **Mokapi mock weather API directly**: http://localhost:8090/current
 - **Mokapi mock SMTP server directly**: `localhost:2525` (any SMTP client)
+- **Localstack SQS endpoint directly**: `localhost:4566` (any AWS SDK/CLI
+  pointed at it with dummy credentials)
 
 ## Using the UI
 
-Use the **REST API** / **Email** tabs at the top to switch between the two
-modules.
+Use the **REST API** / **Email** / **AWS** tabs at the top to switch between
+the three modules.
 
 ### REST API tab
 
@@ -225,6 +305,33 @@ The repo ships with one seeded scenario: `chicago` → 200, temperature 999°F.
    inbox at that address to see it arrive. The Mokapi Inbox panel doesn't
    apply here, since nothing went through the mock.
 
+### AWS tab
+
+1. Write a **Message Body**, pick **Localstack** or **AWS** under **Send
+   via**, then **Send**.
+2. With **Localstack** selected (needs `LOCALSTACK_AUTH_TOKEN` set — see
+   "Getting a localstack auth token" above, or the `localstack` container
+   won't start), the message is sent to a local SQS queue running in the
+   `localstack` container — nothing leaves your machine. The queue (named
+   by `SQS_QUEUE_NAME`) is created by the `localstack-init` service in
+   `docker-compose.yml`, once, when you run `docker compose up` — not by
+   the backend. The **Localstack Queue** panel below then automatically
+   checks the mock queue for the message it just sent and displays it
+   (plus its message ID) in a plain-text, monospaced, scrollable box, the
+   same way the Mokapi Inbox panel does for email. Use **Refresh** to
+   re-check manually. This read is **destructive** — matching how a real
+   SQS consumer works, reading a message removes it from the queue for
+   good — so what's shown is a short history of the last 5 messages the
+   backend has consumed, most recent first, not a live view of the queue's
+   current contents.
+3. With **AWS** selected, the message is sent for real to the SQS queue
+   named by `SQS_QUEUE_NAME` using `AWS_ACCESS_KEY_ID`/
+   `AWS_SECRET_ACCESS_KEY`/`AWS_REGION` from `.env` — check the AWS SQS
+   console or CLI to see it arrive. This demo never creates a real queue for
+   you; sending will fail with a clear error if the queue doesn't already
+   exist. The Localstack Queue panel doesn't apply here, since nothing went
+   through the mock.
+
 ## Manual scenario editing
 
 `mokapi/scenarios.json` is a plain JSON flat file, keyed by lowercased city
@@ -266,9 +373,9 @@ to `backend/src/normalize.js` to also check `body.success === false`.
 - **Hosted lookups fail immediately.** Confirm `.env` has
   `WEATHERSTACK_ACCESS_KEY` set and that `docker compose` picked it up
   (`docker compose config` will show the resolved value).
-- **Port already in use.** 3000, 8080, 8090, or 2525 already bound locally?
-  Change the host-side port in `docker-compose.yml` (left side of the
-  `"host:container"` mapping) — no code changes needed.
+- **Port already in use.** 3000, 8080, 8090, 2525, or 4566 already bound
+  locally? Change the host-side port in `docker-compose.yml` (left side of
+  the `"host:container"` mapping) — no code changes needed.
 - **Mokapi Inbox always shows "No message captured yet", even right after a
   successful Mokapi send.** First hit **Refresh** once or twice — local
   delivery is near-instant but not synchronous with the send response. If it
@@ -280,15 +387,56 @@ to `backend/src/normalize.js` to also check `body.success === false`.
   `.env` has both `GMAIL_USER` and `GMAIL_APP_PASSWORD` set, and that the
   app password (not your regular Gmail password) was generated at
   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+- **AWS (real SQS) send fails with "does not exist".** The queue named by
+  `SQS_QUEUE_NAME` hasn't been provisioned in that AWS account/region yet —
+  this demo never creates it for you. See "Provisioning the real SQS queue"
+  above.
+- **AWS (Localstack) send fails with "does not exist" the first time you
+  run `docker compose up`.** The `localstack-init` service (which creates
+  the queue) hadn't finished yet when you sent — check
+  `docker compose logs localstack-init`; it should show a `QueueUrl` on
+  success. It only runs after `localstack`'s healthcheck passes, which can
+  take a few seconds after `localstack` itself starts.
+- **AWS (Localstack) send fails with a raw "The specified queue does not
+  exist" error after you `docker compose restart localstack` on its own.**
+  Expected — `localstack`'s queue state is in-memory only, so restarting it
+  alone wipes the queue `localstack-init` created earlier, and that service
+  doesn't automatically re-run just because `localstack` restarted. Fix:
+  run `docker compose up localstack-init` (recreates the queue; no backend
+  restart needed — SQS queue URLs are deterministic by name, so the
+  backend's already-cached URL becomes valid again automatically).
+- **Localstack Queue always shows "No message captured yet", even right
+  after a successful Localstack send.** First hit **Refresh** once or
+  twice — local delivery is near-instant but not synchronous with the send
+  response. If it never appears, check `docker compose logs localstack` for
+  errors.
+- **`localstack` container exits immediately with "License activation
+  failed".** `LOCALSTACK_AUTH_TOKEN` is missing or invalid in `.env` —
+  since March 2026, `localstack/localstack:latest` requires a valid token
+  just to start, even for community-tier services like SQS. See "Getting a
+  localstack auth token" above; it's a free signup, no paid plan needed.
+  Note this also blocks `localstack-init` (and therefore the Localstack
+  queue) from ever running, but does **not** block the rest of the app —
+  REST API and Email tabs work fine regardless.
+- **AWS (real SQS) send fails with a credentials error.** Confirm `.env`
+  has `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` set,
+  and that `docker compose` picked them up (`docker compose config` will
+  show the resolved values) — they're passed through to the backend
+  container untouched, so the AWS SDK's default credential chain can see
+  them.
 
 ## Project layout
 
 ```
 backend/    Express API + static frontend host
-frontend/   Native HTML/CSS/JS UI, no build step, tabbed REST API / Email pages
+frontend/   Native HTML/CSS/JS UI, no build step, tabbed REST API / Email / AWS pages
 mokapi/     OpenAPI spec + JS scenario handler + scenarios.json (REST mock),
             mail.yaml (SMTP mock)
 ```
+
+The `localstack` container (SQS mock) needs no config files of its own —
+its queue (named by `SQS_QUEUE_NAME`) is created by the one-shot
+`localstack-init` service in `docker-compose.yml`, not by application code.
 
 See [CLAUDE.md](CLAUDE.md) for the internal contract and file-by-file notes.
 

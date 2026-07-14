@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Demo: mock a REST API and SMTP email with mokapi, side by side with the real thing." />
+  <meta name="description" content="Demo: mock a REST API and SMTP email with mokapi, and AWS SQS with localstack, side by side with the real thing." />
   <title>Mokapi Mocking Demo</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='13' cy='12' r='7' fill='%232563eb'/%3E%3Cellipse cx='17' cy='21' rx='11' ry='7' fill='%235b6270'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
@@ -14,8 +14,8 @@
       <div>
         <h1>Mokapi Mocking Demo</h1>
         <p class="subtitle">
-          One UI, two mocked protocols. Use the tabs below to switch between
-          REST API and Email mocking.
+          One UI, three mocked services. Use the tabs below to switch between
+          REST API, Email, and AWS mocking.
         </p>
       </div>
       <a class="dashboard-link" href="http://localhost:8080" target="_blank" rel="noopener">Mokapi Dashboard ↗</a>
@@ -29,6 +29,10 @@
       <button type="button" class="tab-button" data-page="email" role="tab" aria-selected="false" aria-controls="page-email">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
         Email
+      </button>
+      <button type="button" class="tab-button" data-page="aws" role="tab" aria-selected="false" aria-controls="page-aws">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/></svg>
+        AWS
       </button>
     </nav>
   </header>
@@ -171,6 +175,59 @@
 
       <pre id="inbox-empty" class="mono-box mono-empty">No message captured yet for this address.</pre>
       <pre id="inbox-message" class="mono-box" hidden></pre>
+    </section>
+  </section>
+
+  <section class="page" id="page-aws" role="tabpanel" hidden>
+    <p class="page-intro">
+      Send a message to a real <strong>AWS SQS</strong> queue, or route it through
+      <a href="https://www.localstack.cloud/" target="_blank" rel="noopener">localstack</a>'s
+      local mock SQS queue and inspect exactly what it received &mdash; no real AWS account required.
+    </p>
+
+    <section class="card" id="aws-send-card">
+      <h2>Send to Queue</h2>
+      <form id="aws-form">
+        <label for="aws-body">Message Body</label>
+        <textarea id="aws-body" name="body" rows="6" placeholder="Write the message body…" required></textarea>
+
+        <span class="field-label">Send via</span>
+        <div class="segment" role="radiogroup" aria-label="Queue source">
+          <label class="segment-option">
+            <input type="radio" name="source" value="localstack" checked />
+            <span>Localstack (local mock)</span>
+          </label>
+          <label class="segment-option">
+            <input type="radio" name="source" value="aws" />
+            <span>AWS (real SQS)</span>
+          </label>
+        </div>
+
+        <button type="submit" id="aws-submit">Send</button>
+      </form>
+
+      <div id="aws-result" class="result" hidden></div>
+    </section>
+
+    <section class="card" id="aws-queue-card">
+      <h2>Localstack Queue</h2>
+      <p class="hint">
+        Shows the last 5 messages localstack's mock SQS queue actually
+        received, most recent first &mdash; proof each send went through the
+        mock, not a simulated success. Reading a message removes it from the
+        queue for good, matching how a real consumer works; this list is a
+        short history kept for the session, not a live view of the queue.
+        Only populated when the message was sent via Localstack; for a real
+        AWS send, verify it in the AWS SQS console or CLI instead.
+      </p>
+
+      <div class="inbox-toolbar">
+        <button type="button" id="aws-queue-refresh">Refresh</button>
+        <span id="aws-queue-status" class="hint"></span>
+      </div>
+
+      <pre id="aws-queue-empty" class="mono-box mono-empty">No message captured yet.</pre>
+      <pre id="aws-queue-message" class="mono-box" hidden></pre>
     </section>
   </section>
   </main>

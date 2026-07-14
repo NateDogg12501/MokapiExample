@@ -5,6 +5,7 @@ import { fetchWeather } from './src/weatherClient.js'
 import { normalizeWeatherResponse } from './src/normalize.js'
 import { listScenarios, upsertScenario, deleteScenario } from './src/scenarioStore.js'
 import { sendEmail, fetchMokapiInboxMessage } from './src/emailClient.js'
+import { sendMessage, fetchLocalstackMessages } from './src/sqsClient.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -86,6 +87,34 @@ app.get('/api/email/mokapi-inbox/:address', async (req, res) => {
         res.json(message ? { status: 'found', message } : { status: 'empty' })
     } catch (err) {
         res.status(502).json({ status: 'error', errorInfo: `Could not reach mokapi mail API: ${err.message}` })
+    }
+})
+
+app.post('/api/aws/send', async (req, res) => {
+    const body = String(req.body?.body || '').trim()
+    const source = req.body?.source
+
+    if (!body) {
+        return res.status(400).json({ status: 'error', errorInfo: 'Message body is required' })
+    }
+    if (source !== 'aws' && source !== 'localstack') {
+        return res.status(400).json({ status: 'error', errorInfo: 'source must be "aws" or "localstack"' })
+    }
+
+    try {
+        await sendMessage(source, body)
+        res.json({ status: 'success', source })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: err.message })
+    }
+})
+
+app.get('/api/aws/localstack-inbox', async (req, res) => {
+    try {
+        const { messages, receivedNew } = await fetchLocalstackMessages()
+        res.json(messages.length > 0 ? { status: 'found', messages, receivedNew } : { status: 'empty' })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach localstack SQS: ${err.message}` })
     }
 })
 

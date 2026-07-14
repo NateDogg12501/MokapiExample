@@ -3,7 +3,8 @@
 const tabButtons = document.querySelectorAll('.tab-button')
 const pageSections = {
   rest: document.getElementById('page-rest'),
-  email: document.getElementById('page-email')
+  email: document.getElementById('page-email'),
+  aws: document.getElementById('page-aws')
 }
 
 for (const button of tabButtons) {
@@ -325,4 +326,102 @@ inboxRefreshBtn.addEventListener('click', async () => {
   const found = await checkMokapiInbox(address)
   inboxStatus.textContent = found ? '' : 'No message captured yet for this address.'
   inboxRefreshBtn.disabled = false
+})
+
+// --- AWS SQS sending --------------------------------------------------
+
+const awsForm = document.getElementById('aws-form')
+const awsResult = document.getElementById('aws-result')
+const awsSubmit = document.getElementById('aws-submit')
+const awsQueueRefreshBtn = document.getElementById('aws-queue-refresh')
+const awsQueueStatus = document.getElementById('aws-queue-status')
+const awsQueueEmpty = document.getElementById('aws-queue-empty')
+const awsQueueMessage = document.getElementById('aws-queue-message')
+
+awsForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const body = document.getElementById('aws-body').value
+  const source = awsForm.querySelector('input[name="source"]:checked').value
+  if (!body.trim()) return
+
+  awsResult.hidden = true
+  setLoading(awsSubmit, true, 'Sending…')
+
+  try {
+    const res = await fetch('/api/aws/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, source })
+    })
+    const data = await res.json()
+    renderAwsResult(data)
+
+    if (data.status === 'success' && source === 'localstack') {
+      await pollLocalstackQueue()
+    }
+  } catch (err) {
+    renderAwsResult({ status: 'error', errorInfo: `Request failed: ${err.message}` })
+  } finally {
+    setLoading(awsSubmit, false, 'Send')
+  }
+})
+
+function renderAwsResult(data) {
+  awsResult.hidden = false
+  awsResult.style.animation = 'none'
+  void awsResult.offsetWidth
+  awsResult.style.animation = ''
+
+  if (data.status === 'success') {
+    awsResult.className = 'result success'
+    awsResult.textContent = `Sent via ${data.source === 'aws' ? 'real AWS SQS' : "localstack's mock SQS queue"}.`
+  } else {
+    awsResult.className = 'result error'
+    awsResult.textContent = data.errorInfo || 'Failed to send message.'
+  }
+}
+
+async function pollLocalstackQueue() {
+  awsQueueStatus.textContent = 'Checking localstack queue…'
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const data = await refreshLocalstackQueue()
+    if (data.status === 'error') {
+      awsQueueStatus.textContent = data.errorInfo
+      return
+    }
+    if (data.receivedNew) {
+      awsQueueStatus.textContent = ''
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600))
+  }
+  awsQueueStatus.textContent = 'Not captured yet — try Refresh in a moment.'
+}
+
+// Reading a message from the localstack queue is destructive (matches a
+// real consumer), so the queue itself can't be "re-checked" for history —
+// the backend keeps its own short buffer of recently consumed messages
+// (see fetchLocalstackMessages in sqsClient.js) and returns the whole
+// thing every time, newest first, which is what's rendered here.
+async function refreshLocalstackQueue() {
+  const res = await fetch('/api/aws/localstack-inbox')
+  const data = await res.json()
+
+  if (data.status === 'found') {
+    awsQueueEmpty.hidden = true
+    awsQueueMessage.hidden = false
+    awsQueueMessage.textContent = data.messages
+      .map((m) => `Message ID: ${m.messageId}\n\n${m.body}`)
+      .join(`\n\n${'─'.repeat(40)}\n\n`)
+  }
+
+  return data
+}
+
+awsQueueRefreshBtn.addEventListener('click', async () => {
+  awsQueueRefreshBtn.disabled = true
+  awsQueueStatus.textContent = 'Checking localstack queue…'
+  const data = await refreshLocalstackQueue()
+  awsQueueStatus.textContent = data.status === 'found' ? '' : (data.errorInfo || 'No message captured yet.')
+  awsQueueRefreshBtn.disabled = false
 })
