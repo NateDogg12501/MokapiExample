@@ -4,8 +4,8 @@ A small demo of using local, spec- or config-driven mocks to stand in for
 real third-party services, instead of hand-rolling fake servers and poking
 them with Postman. Two tools illustrate the same practice for different
 protocols — [mokapi](https://mokapi.io/) for REST and SMTP,
-[localstack](https://www.localstack.cloud/) for AWS — behind one UI, three
-tabs, each toggleable against the real thing:
+[localstack](https://www.localstack.cloud/) for AWS and Snowflake — behind
+one UI, four tabs, each toggleable against the real thing:
 
 - **REST API tab** — [weatherstack](https://docs.apilayer.com/weatherstack/docs/weatherstack-api-v-1-0-0)'s
   "current weather" endpoint, mocked from an OpenAPI spec via mokapi, vs. the
@@ -15,6 +15,9 @@ tabs, each toggleable against the real thing:
 - **AWS tab** — sends a message to an SQS queue, mocked locally via
   [localstack](https://www.localstack.cloud/)'s AWS emulator, vs. a real
   hosted SQS queue.
+- **Snowflake tab** — CRUD on a `person` table, mocked locally via
+  [LocalStack for Snowflake](https://www.localstack.cloud/localstack-for-snowflake),
+  vs. a real Snowflake warehouse.
 
 ## Why this matters
 
@@ -53,7 +56,7 @@ instance.
 
 ```mermaid
 flowchart TD
-    Browser["Browser<br/>localhost:3000"] --> Backend["backend (Express)<br/>serves frontend/<br/>+ /api/weather &nbsp;+ /api/scenarios &nbsp;+ /api/email &nbsp;+ /api/aws"]
+    Browser["Browser<br/>localhost:3000"] --> Backend["backend (Express)<br/>serves frontend/<br/>+ /api/weather &nbsp;+ /api/scenarios &nbsp;+ /api/email &nbsp;+ /api/aws &nbsp;+ /api/snowflake"]
 
     Backend -->|source=hosted| Weatherstack["api.weatherstack.com<br/>real API, needs an access key"]
     Backend -->|source=mock| Mokapi
@@ -62,6 +65,9 @@ flowchart TD
     Backend -->|source=aws| AwsSqs["real AWS SQS<br/>needs AWS credentials + a pre-existing queue"]
     Backend -->|source=localstack| Localstack["localstack container<br/>SQS mock — localhost:4566<br/>queue named by SQS_QUEUE_NAME"]
     LocalstackInit["localstack-init<br/>(one-shot, docker compose up)"] -.creates queue.-> Localstack
+    Backend -->|source=snowflake| RealSnowflake["real Snowflake warehouse<br/>needs Snowflake credentials + a pre-existing person table"]
+    Backend -->|source=localstack| SnowflakeMock["localstack-snowflake container<br/>Snowflake mock — localhost:4567<br/>person table named by SNOWFLAKE_TABLE"]
+    SnowflakeInit["snowflake-mock-init<br/>(one-shot, docker compose up)"] -.creates database+table.-> SnowflakeMock
 ```
 
 The backend never exposes which source answered a weather lookup — it
@@ -82,6 +88,13 @@ for review only exists for the Localstack source. It's destructive (matches
 a real consumer — reading removes the message from the queue), so the
 backend keeps a short in-memory history of the last 5 messages it's
 consumed to display, since the queue itself has nothing left to re-check.
+For Snowflake, a separate `localstack-snowflake` container (a different
+LocalStack product from the SQS one, with its own license requirement — see
+below) mocks a Snowflake warehouse; its database and `person` table are
+created by a one-shot `snowflake-mock-init` service on `docker compose up`,
+the same pattern as `localstack-init` for SQS. The backend runs the same
+parameterized `SELECT`/`INSERT`/`UPDATE`/`DELETE` queries against either
+source, differing only in connection details.
 
 ## Demo script
 
@@ -133,6 +146,20 @@ The fastest way to see what this is about, in order:
     sends it for real via the AWS SDK this time — check the AWS SQS console
     to confirm the message arrived. The Localstack Queue panel doesn't apply
     here, since nothing went through the mock.
+12. **Switch to the Snowflake tab** (with **Localstack** selected — needs a
+    `LOCALSTACK_AUTH_TOKEN` entitled to LocalStack for Snowflake
+    specifically, a separate license from the AWS tab's; see "Getting a
+    LocalStack for Snowflake token" below). Add a row with **+**, fill in
+    First/Last Name and Favorite Color, and **save** it (floppy-disk icon) —
+    it's now a real row in the mock's `person` table. Double-click a cell to
+    edit it in place, then save again to update it.
+13. **Switch Source to Snowflake (real)** (needs `SNOWFLAKE_ACCOUNT`/
+    `SNOWFLAKE_USERNAME`/`SNOWFLAKE_PASSWORD`/`SNOWFLAKE_WAREHOUSE`/
+    `SNOWFLAKE_DATABASE` set, and a real `person` table already provisioned
+    — see "Provisioning the real Snowflake table"). The exact same UI, same
+    queries, now run against a real warehouse — check it directly (Snowsight
+    or `snowsql`) to confirm the row landed. Same point as steps 5 and 11:
+    the practice generalizes past any one tool or protocol.
 
 ## Prerequisites
 
@@ -149,6 +176,14 @@ The fastest way to see what this is about, in order:
   needed, just a signup).
 - Real AWS credentials + a pre-existing SQS queue — **only required if you
   want to try the AWS tab's "AWS (real SQS)" option**.
+- A [LocalStack for Snowflake](https://www.localstack.cloud/localstack-for-snowflake)
+  trial or paid token — **required for the Snowflake tab's "Localstack"
+  option**. This is a *separate product* from the base localstack account
+  above; the free SQS token does not cover it. A 30-day free trial (no card
+  required) is available.
+- Real Snowflake credentials (account, user, password, warehouse) + a
+  pre-existing `person` table — **only required if you want to try the
+  Snowflake tab's "Snowflake (real)" option**.
 
 ## Adding your credentials
 
@@ -172,7 +207,21 @@ LOCALSTACK_AUTH_TOKEN=your-localstack-token
 AWS_ACCESS_KEY_ID=your-access-key-id
 AWS_SECRET_ACCESS_KEY=your-secret-access-key
 AWS_REGION=us-east-1
+SNOWFLAKE_TABLE=person
+SNOWFLAKE_ACCOUNT=your-account-identifier
+SNOWFLAKE_USERNAME=your-snowflake-username
+SNOWFLAKE_PASSWORD=your-snowflake-password
+SNOWFLAKE_WAREHOUSE=your-warehouse-name
+SNOWFLAKE_DATABASE=your-database-name
+SNOWFLAKE_SCHEMA=PUBLIC
 ```
+
+Note that `LOCALSTACK_AUTH_TOKEN` above is required twice over for two
+*different* reasons: once for the AWS tab's "Localstack" option (any free
+account works), and again for the Snowflake tab's "Localstack" option —
+which needs that same token to additionally be entitled to LocalStack for
+Snowflake specifically (a separate paid product/trial). See "Getting a
+LocalStack for Snowflake token" below.
 
 `.env` is gitignored — credentials are only ever passed into the backend
 container as environment variables, never baked into an image or committed.
@@ -244,6 +293,49 @@ sources, not something the integration layer does at request time.)
    for that. Only set `AWS_SESSION_TOKEN` if you're using temporary
    credentials instead (an assumed role, SSO, or an MFA session token).
 
+### Getting a LocalStack for Snowflake token
+
+Required for the Snowflake tab's "Localstack" option. LocalStack for
+Snowflake is a **separate product** from the base localstack image the AWS
+tab uses — a free SQS-only token will make the `localstack-snowflake`
+container fail its own license check with the same "License activation
+failed" error the AWS tab's `localstack` container shows without a token
+at all.
+
+1. Go to [localstack.cloud/start-snowflake-trial](https://www.localstack.cloud/start-snowflake-trial)
+   and start the 30-day free trial (no card required) — or use an existing
+   paid LocalStack for Snowflake plan if you have one.
+2. In the LocalStack web app, generate/copy an auth token entitled to the
+   Snowflake product (same place as the base `LOCALSTACK_AUTH_TOKEN` above).
+3. Set it as `LOCALSTACK_AUTH_TOKEN` in `.env` — this repo reuses the same
+   variable for both the AWS and Snowflake tabs' Localstack options (see
+   "Adding your credentials" above), so this token needs to be entitled to
+   *both* if you want both tabs' mock options working at once.
+
+### Provisioning the real Snowflake table
+
+Only needed for the Snowflake tab's "Snowflake (real)" option. The backend
+never creates the table — same "provisioning is the user's job, not the
+integration layer's" policy as the AWS tab's real SQS queue.
+
+1. In the Snowflake database/schema you want to use, create the table named
+   to match `SNOWFLAKE_TABLE` in `.env` (default `person`):
+   ```sql
+   CREATE TABLE person (
+       first_name VARCHAR(50),
+       last_name VARCHAR(50),
+       favorite_color VARCHAR(30)
+   );
+   ```
+   No primary key is created on purpose — see "Known limitation: no formal
+   primary key" below.
+2. Set `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USERNAME`, `SNOWFLAKE_PASSWORD`,
+   `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, and `SNOWFLAKE_SCHEMA`
+   (default `PUBLIC`) in `.env` to a user with `SELECT`/`INSERT`/`UPDATE`/
+   `DELETE` on that table and `USAGE` on that warehouse. Password auth must
+   be enabled for that user — this demo doesn't support key-pair or SSO
+   auth.
+
 ## Running it
 
 ```bash
@@ -258,11 +350,14 @@ Then open:
 - **Mokapi mock SMTP server directly**: `localhost:2525` (any SMTP client)
 - **Localstack SQS endpoint directly**: `localhost:4566` (any AWS SDK/CLI
   pointed at it with dummy credentials)
+- **LocalStack for Snowflake endpoint directly**: `localhost:4567` (the
+  Snowflake Node.js/Python driver, SnowSQL, or DBeaver, pointed at it with
+  `account/user/password: test`)
 
 ## Using the UI
 
-Use the **REST API** / **Email** / **AWS** tabs at the top to switch between
-the three modules.
+Use the **REST API** / **Email** / **AWS** / **Snowflake** tabs at the top
+to switch between the four modules.
 
 ### REST API tab
 
@@ -332,6 +427,66 @@ The repo ships with one seeded scenario: `chicago` → 200, temperature 999°F.
    exist. The Localstack Queue panel doesn't apply here, since nothing went
    through the mock.
 
+### Snowflake tab
+
+1. Pick **Localstack** or **Snowflake (real)** under **Source**. The table
+   below shows every row currently in the `person` table for that source.
+   There's no automatic polling — click **Refresh** to reload it, or take
+   any of the actions below, which each reload it for you afterward.
+2. **Filter**: type a value into **First Name** and click **Filter** to run
+   a `WHERE first_name = ...` query. This only affects that one query —
+   **Refresh**, **Clear**, and every save/delete revert to showing all
+   records. **Clear** resets the First Name field and reloads the
+   unfiltered table in one click.
+3. **Select a row** by clicking it (it highlights).
+4. **Edit a cell** by double-clicking it — it turns into a text box; press
+   Enter or click elsewhere to commit, or Escape to cancel. Editing doesn't
+   save anything by itself — nothing is sent to the server until you click
+   the floppy-disk (save) icon that appears in the selected row's own last
+   column. If you select a different row (or add another one) while a row
+   still has unsaved changes, that row turns amber — a reminder that it
+   still needs to be saved. **Refresh**/**Filter**/**Clear**/switching
+   **Source** all reload from the server but carry any unsaved row(s)
+   forward rather than discarding them.
+5. **Add a row** with the **+** button above the table — this adds a blank,
+   client-side-only row and selects it. Fill in its cells, then click the
+   floppy-disk icon to actually insert it (an unsaved row that's deleted
+   instead is just discarded locally, no request sent).
+6. **Save** (floppy-disk icon) either inserts a new row (if added via **+**)
+   or updates an existing one, matching it by its *original* First/Last
+   Name — so renaming a row's name and saving still finds and updates the
+   right row, rather than inserting a duplicate.
+7. **Delete** a row either with the **&minus;** button above the table or
+   the trash-can icon in the selected row itself — both do the same thing.
+   There's no confirmation prompt; deleting is immediate. Neither icon is
+   ever shown when the table has no records — there's no row to attach
+   them to.
+8. The **Presets** box (bordered, to the right of the table) has three
+   shortcuts for step 5 — each adds a row the same way **+** does (blank,
+   client-side-only, selected, still requires the floppy-disk icon to
+   actually save), just with some cells pre-filled:
+   - **Kung Fu Panda** sets First Name to `Jack`, Last Name to `Black`, and
+     Favorite Color to `White` (Po is voiced by Jack Black, and pandas are
+     black *and* white).
+   - **Randomize** fills all three fields from static pick-lists in
+     `frontend/app.js` (`SNOWFLAKE_RANDOM_FIRST_NAMES`/`_LAST_NAMES`/`_COLORS`)
+     — edit those arrays directly to change what it can generate.
+   - **Another Schlechte** sets First Name to `No` and Last Name to `Way`,
+     leaving Favorite Color for you to fill in.
+
+With **Localstack** selected (needs `LOCALSTACK_AUTH_TOKEN` entitled to
+LocalStack for Snowflake — see "Getting a LocalStack for Snowflake token"
+above, or the `localstack-snowflake` container won't start), all of the
+above runs against a local mock warehouse — nothing leaves your machine.
+Its `person` table (named by `SNOWFLAKE_TABLE`) is created by the
+`snowflake-mock-init` service in `docker-compose.yml`, once, when you run
+`docker compose up` — not by the backend. With **Snowflake (real)**
+selected, the exact same actions run for real against the warehouse named
+by `SNOWFLAKE_DATABASE`/`SNOWFLAKE_WAREHOUSE`/`SNOWFLAKE_SCHEMA` — check it
+directly (Snowsight, `snowsql`, or any SQL client) to confirm changes
+landed. This demo never creates the real table for you; see "Provisioning
+the real Snowflake table" above.
+
 ## Manual scenario editing
 
 `mokapi/scenarios.json` is a plain JSON flat file, keyed by lowercased city
@@ -359,6 +514,14 @@ The mock path is unaffected, since mokapi is explicitly told to return a
 literal 200 or 400. If you hit this in practice, the fix is a small change
 to `backend/src/normalize.js` to also check `body.success === false`.
 
+## Known limitation: no formal primary key
+
+The `person` table has no primary key — `first_name` + `last_name` are
+treated as a de facto key by the UI and by the `UPDATE`/`DELETE` queries,
+but nothing in the schema enforces uniqueness. If two rows share the same
+first and last name, an update or delete targeting one could affect both.
+This is a deliberate, accepted trade-off for this demo, not an oversight.
+
 ## Troubleshooting
 
 - **`GET http://localhost:8090/` returns 404.** Expected — mokapi's mock
@@ -373,9 +536,9 @@ to `backend/src/normalize.js` to also check `body.success === false`.
 - **Hosted lookups fail immediately.** Confirm `.env` has
   `WEATHERSTACK_ACCESS_KEY` set and that `docker compose` picked it up
   (`docker compose config` will show the resolved value).
-- **Port already in use.** 3000, 8080, 8090, 2525, or 4566 already bound
-  locally? Change the host-side port in `docker-compose.yml` (left side of
-  the `"host:container"` mapping) — no code changes needed.
+- **Port already in use.** 3000, 8080, 8090, 2525, 4566, or 4567 already
+  bound locally? Change the host-side port in `docker-compose.yml` (left
+  side of the `"host:container"` mapping) — no code changes needed.
 - **Mokapi Inbox always shows "No message captured yet", even right after a
   successful Mokapi send.** First hit **Refresh** once or twice — local
   delivery is near-instant but not synchronous with the send response. If it
@@ -424,19 +587,88 @@ to `backend/src/normalize.js` to also check `body.success === false`.
   show the resolved values) — they're passed through to the backend
   container untouched, so the AWS SDK's default credential chain can see
   them.
+- **`localstack-snowflake` container exits immediately with "License
+  activation failed".** `LOCALSTACK_AUTH_TOKEN` is missing entirely. See
+  "Getting a LocalStack for Snowflake token" above. Blocks
+  `snowflake-mock-init` (and therefore the Snowflake tab's Localstack
+  option) but not the rest of the app.
+- **`localstack-snowflake` logs "The Snowflake emulator is currently not
+  covered by your license" and exits, even though `LOCALSTACK_AUTH_TOKEN`
+  is set.** The license itself activated fine (you'll see "Successfully
+  requested and activated new license ...:freemium" just above it) — this
+  token isn't entitled to LocalStack for Snowflake specifically, a separate
+  product from the base/SQS tier. Confirmed live: a freemium token that
+  starts the AWS tab's `localstack` container cleanly still hits exactly
+  this error on `localstack-snowflake`. See "Getting a LocalStack for
+  Snowflake token" above. **If you just started the trial and still see
+  this**, it may be entitlement propagation lag rather than anything
+  actually wrong — confirmed live this can persist across several clean
+  `docker compose down` + `up -d` cycles (each doing a real, non-cached
+  license check) before suddenly resolving to `:trial`. Worth waiting a
+  few minutes and retrying with a clean recreate before assuming the token
+  itself is the problem.
+- **Snowflake tab shows "Timed out connecting after 8s" (Localstack) or an
+  immediate "Invalid account" error (Snowflake real).** Both are expected,
+  fast-failing errors, not hangs — this app deliberately wraps the
+  Snowflake driver's connection attempt in its own short timeout, since the
+  driver's own retry logic can otherwise take up to 5 minutes to give up
+  (see [CLAUDE.md](CLAUDE.md#snowflake-mocking-facts-localstack-for-snowflake)
+  for why). For Localstack, check `docker compose logs localstack-snowflake`
+  and `docker compose logs snowflake-mock-init` — the latter should show
+  "Mock Snowflake table ready" on success. For real Snowflake, double-check
+  `SNOWFLAKE_ACCOUNT` — it's not your username or a URL, but the account
+  identifier segment (e.g. `xy12345.us-east-1` or `orgname-accountname`).
+- **`snowflake-mock-init` hangs indefinitely (never exits) with the last
+  log line "authentication successful using: SNOWFLAKE", and
+  `localstack-snowflake`'s own logs show repeated
+  `POST /session/v1/login-request => 200` at growing intervals.** This is
+  `snowflake-sdk` silently retrying a login it never considers complete —
+  confirmed live this happens when `localstack-snowflake` falls back to
+  its default hostname instead of recognizing the `localstack-snowflake`
+  container name (check its logs for `SF_HOSTNAME_REGEX is deprecated`).
+  Make sure `docker-compose.yml` sets `SF_HOSTNAMES: localstack-snowflake`
+  (not the deprecated `SF_HOSTNAME_REGEX`) on the `localstack-snowflake`
+  service, and that its logs show
+  `Snowflake hostname config: hostnames=['localstack-snowflake']` — if
+  they instead show `hostnames=['snowflake.localhost.localstack.cloud']`,
+  that's this exact problem.
+- **Real Snowflake fails fast with "Request to Snowflake failed."** This is
+  an HTTP-level rejection from Snowflake itself — confirmed live that it's
+  not a network/connectivity/DNS problem (a plain HTTPS request to the same
+  `<account>.snowflakecomputing.com` host succeeds from inside the backend
+  container). Most likely causes: wrong `SNOWFLAKE_PASSWORD`, a Snowflake
+  network policy blocking the connection's source IP, or MFA/Duo required
+  on that user (which password-only auth can't satisfy — see "Things
+  intentionally left simple" in [CLAUDE.md](CLAUDE.md) on why this demo
+  doesn't support key-pair/MFA auth). Double-check the password first; if
+  that's confirmed correct, check the user's network policy and
+  authentication requirements in Snowflake directly.
+- **Snowflake tab's table stays stuck on "Loading…" or a stale row
+  reappears after a failed save.** Click **Refresh** — a failed
+  save/delete/edit leaves the previous state on screen deliberately (so you
+  don't lose in-progress edits), but a plain data-load failure clears the
+  table rather than show stale rows as if they were real. If a row you
+  never saved (added via **+**) disappears after a failed refresh, that's
+  expected: it was never persisted, so there was nothing real to preserve.
 
 ## Project layout
 
 ```
-backend/    Express API + static frontend host
-frontend/   Native HTML/CSS/JS UI, no build step, tabbed REST API / Email / AWS pages
-mokapi/     OpenAPI spec + JS scenario handler + scenarios.json (REST mock),
-            mail.yaml (SMTP mock)
+backend/         Express API + static frontend host
+frontend/        Native HTML/CSS/JS UI, no build step, tabbed REST API / Email / AWS / Snowflake pages
+mokapi/          OpenAPI spec + JS scenario handler + scenarios.json (REST mock),
+                 mail.yaml (SMTP mock)
+snowflake-init/  One-shot Node script + Dockerfile that creates the Snowflake
+                 mock's database/table on `docker compose up` (mirrors
+                 localstack-init's role for the AWS tab's SQS queue)
 ```
 
 The `localstack` container (SQS mock) needs no config files of its own —
 its queue (named by `SQS_QUEUE_NAME`) is created by the one-shot
 `localstack-init` service in `docker-compose.yml`, not by application code.
+Same pattern for the `localstack-snowflake` container (Snowflake mock) and
+`snowflake-init/`'s one-shot `snowflake-mock-init` service, which creates
+its database/table (named by `SNOWFLAKE_TABLE`).
 
 See [CLAUDE.md](CLAUDE.md) for the internal contract and file-by-file notes.
 

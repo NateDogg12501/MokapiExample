@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Demo: mock a REST API and SMTP email with mokapi, and AWS SQS with localstack, side by side with the real thing." />
+  <meta name="description" content="Demo: mock a REST API and SMTP email with mokapi, AWS SQS with localstack, and Snowflake with LocalStack for Snowflake, side by side with the real thing." />
   <title>Mokapi Mocking Demo</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='13' cy='12' r='7' fill='%232563eb'/%3E%3Cellipse cx='17' cy='21' rx='11' ry='7' fill='%235b6270'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
@@ -14,8 +14,8 @@
       <div>
         <h1>Mokapi Mocking Demo</h1>
         <p class="subtitle">
-          One UI, three mocked services. Use the tabs below to switch between
-          REST API, Email, and AWS mocking.
+          One UI, four mocked services. Use the tabs below to switch between
+          REST API, Email, AWS, and Snowflake mocking.
         </p>
       </div>
       <a class="dashboard-link" href="http://localhost:8080" target="_blank" rel="noopener">Mokapi Dashboard ↗</a>
@@ -33,6 +33,10 @@
       <button type="button" class="tab-button" data-page="aws" role="tab" aria-selected="false" aria-controls="page-aws">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/></svg>
         AWS
+      </button>
+      <button type="button" class="tab-button" data-page="snowflake" role="tab" aria-selected="false" aria-controls="page-snowflake">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5.5 6.5l13 11M18.5 6.5l-13 11M3 12h18"/></svg>
+        Snowflake
       </button>
     </nav>
   </header>
@@ -228,6 +232,92 @@
 
       <pre id="aws-queue-empty" class="mono-box mono-empty">No message captured yet.</pre>
       <pre id="aws-queue-message" class="mono-box" hidden></pre>
+    </section>
+  </section>
+
+  <section class="page" id="page-snowflake" role="tabpanel" hidden>
+    <p class="page-intro">
+      Query a <code>person</code> table from a real
+      <a href="https://www.snowflake.com/" target="_blank" rel="noopener">Snowflake</a>
+      warehouse, or route it through
+      <a href="https://www.localstack.cloud/localstack-for-snowflake" target="_blank" rel="noopener">LocalStack for Snowflake</a>'s
+      local mock &mdash; no real warehouse required.
+    </p>
+
+    <section class="card" id="snowflake-card">
+      <h2>Person Records</h2>
+
+      <span class="field-label">Source</span>
+      <div class="segment snowflake-source-segment" role="radiogroup" aria-label="Data source">
+        <label class="segment-option">
+          <input type="radio" name="snowflake-source" value="localstack" checked />
+          <span>Localstack (local mock)</span>
+        </label>
+        <label class="segment-option">
+          <input type="radio" name="snowflake-source" value="snowflake" />
+          <span>Snowflake (real)</span>
+        </label>
+      </div>
+
+      <div class="snowflake-toolbar">
+        <form id="snowflake-filter-form" class="inline-form">
+          <label for="snowflake-filter-input">First Name</label>
+          <input type="text" id="snowflake-filter-input" placeholder="e.g. Jane" autocomplete="off" />
+          <button type="submit" id="snowflake-filter-submit">Filter</button>
+          <button type="button" id="snowflake-filter-clear">Clear</button>
+        </form>
+
+        <button type="button" id="snowflake-refresh">Refresh</button>
+
+        <div class="snowflake-add-remove-group">
+          <button type="button" id="snowflake-remove-row" class="icon-button" title="Remove selected row" disabled>&minus;</button>
+          <button type="button" id="snowflake-add-row" class="icon-button" title="Add row">+</button>
+        </div>
+      </div>
+
+      <span id="snowflake-status" class="hint"></span>
+
+      <div class="snowflake-table-row">
+        <div class="table-wrapper snowflake-table-wrapper" id="snowflake-table-wrapper">
+          <table id="snowflake-table">
+            <colgroup>
+              <col style="width: 26%" />
+              <col style="width: 26%" />
+              <col style="width: 30%" />
+              <col style="width: 18%" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>First Name</th>
+                <th>Last Name</th>
+                <th>Favorite Color</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="snowflake-table-body"></tbody>
+          </table>
+          <p id="snowflake-empty-state" class="hint" hidden>No records.</p>
+        </div>
+
+        <fieldset class="snowflake-preset-group">
+          <legend>Presets</legend>
+          <button type="button" id="snowflake-preset-kungfupanda">Kung Fu Panda</button>
+          <button type="button" id="snowflake-preset-randomize">Randomize</button>
+          <button type="button" id="snowflake-preset-schlechte">Another Schlechte</button>
+        </fieldset>
+      </div>
+
+      <p class="hint">
+        Click a row to select it (highlighted); double-click a cell to edit it.
+        Use <strong>+</strong>/<strong>&minus;</strong> above the table to add a
+        blank row or delete the selected one, or the floppy-disk/trash icons
+        in a selected row's own last column to save its edits or delete it.
+        The <strong>Presets</strong> buttons add a row pre-filled with preset
+        or random values, same as <strong>+</strong> &mdash; nothing is saved
+        until you click the floppy-disk icon. Filtering by First Name only
+        affects the next query &mdash; <strong>Refresh</strong> and
+        <strong>Clear</strong> both revert to showing all records.
+      </p>
     </section>
   </section>
   </main>

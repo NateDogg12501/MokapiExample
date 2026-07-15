@@ -5,8 +5,8 @@ user-facing setup/run instructions.
 
 ## What this is
 
-A demo of using local mocks — mokapi for two protocols, localstack for a
-third — each toggleable against the real thing, behind one UI with a
+A demo of using local mocks — mokapi for two protocols, localstack for two
+more — each toggleable against the real thing, behind one UI with a
 top-level tab switch:
 
 - **REST API tab** — the weatherstack "current weather" API, mocked via an
@@ -15,14 +15,18 @@ top-level tab switch:
   SMTP.
 - **AWS tab** — an SQS queue, mocked via a localstack container, vs. a real
   hosted SQS queue.
+- **Snowflake tab** — CRUD on a `person` table, mocked via a LocalStack for
+  Snowflake container, vs. a real Snowflake warehouse.
 
 Runtime pieces:
 
 - `backend/` — Express app. Serves the static `frontend/` and proxies
   `/api/weather` to either the hosted weatherstack API or the local mokapi
   container (normalizing both into one response shape), `/api/email/*` to
-  either Gmail SMTP or mokapi's mock SMTP server, and `/api/aws/*` to either
-  real AWS SQS or a local `localstack` container's mock SQS.
+  either Gmail SMTP or mokapi's mock SMTP server, `/api/aws/*` to either
+  real AWS SQS or a local `localstack` container's mock SQS, and
+  `/api/snowflake/*` to either a real Snowflake warehouse or a local
+  `localstack-snowflake` container's mock.
 - `mokapi/` — OpenAPI spec + JS handler for the weather mock (`openapi.yaml`,
   `mock.js`), plus a mail spec for the email mock (`mail.yaml`). Both files
   live in the same provider directory and mokapi auto-discovers and runs
@@ -35,6 +39,14 @@ Runtime pieces:
   an already-existing queue, symmetric with how it treats a real AWS queue.
   Requires `LOCALSTACK_AUTH_TOKEN` (free signup) to start at all — see
   "Gotchas" below.
+- `localstack-snowflake` (docker-compose service, image
+  `localstack/snowflake`) — mocks a Snowflake warehouse. Its database/table
+  are created by a one-shot `snowflake-mock-init` service (`snowflake-init/`,
+  a small Node container using `snowflake-sdk` directly — see "Snowflake
+  mocking facts" below), the same infra-not-application-code pattern as
+  `localstack-init`. Requires its own paid-tier `LOCALSTACK_AUTH_TOKEN`
+  entitlement — see "Snowflake mocking facts" below, this is *not* covered
+  by the free token the SQS `localstack` service uses.
 
 ## The normalization contract
 
@@ -222,6 +234,328 @@ container startup. Both runs confirm the same facts:
   that wrong and every SQS call fails the same way regardless of the API
   credentials being correct.
 
+## Snowflake mocking facts (LocalStack for Snowflake)
+
+Fully verified against live containers in Docker Desktop, including the
+mock actually running `SELECT`/`INSERT`/`UPDATE`/`DELETE` successfully —
+confirmed live end-to-end through the real UI (add via a preset, save,
+edit a cell, save again, delete) once a genuine LocalStack for Snowflake
+trial token was available. Getting there took a few rounds — see the
+license-entitlement and `SF_HOSTNAME_REGEX` gotchas below, both of which
+looked like "still broken" for a while before turning out to be one
+specific, fixable cause each.
+
+- **`localstack/snowflake` is a separate paid product from the base
+  `localstack/localstack` image**, not a service flag on it — different
+  Docker image, different license. It happens to share the same
+  `LOCALSTACK_AUTH_TOKEN` env var name in `docker-compose.yml` (a deliberate
+  choice made here to keep `.env` simpler — see the AskUserQuestion decision
+  in this feature's history), but a free-tier token that works fine for the
+  SQS `localstack` service will make `localstack-snowflake` fail its own
+  license check with the same "License activation failed" error. A real
+  LocalStack for Snowflake entitlement (30-day free trial, no card, at
+  localstack.cloud/start-snowflake-trial, or a paid plan) is required for
+  this specific container to ever start — confirmed live: with no token at
+  all, `localstack-snowflake` exits immediately with exit code 55, byte-for-
+  byte the same failure shape as the SQS `localstack` service's documented
+  gotcha above. **Also confirmed live: a token can show as "freemium" on
+  this container's own license check for a while even after the trial shows
+  as active on the LocalStack dashboard** — several consecutive clean
+  recreates (new container, non-cached license check, confirmed-fresh
+  `.env` value) all resolved the same account to the same freemium license
+  ID before a later attempt suddenly came back `:trial`. If this container
+  logs "not covered by your license" right after you've started a trial,
+  that may just be entitlement propagation lag on LocalStack's side rather
+  than anything wrong locally — retrying a clean `docker compose down` +
+  `up -d` later is worth doing before assuming the setup is broken.
+- **Container-to-container connectivity uses `SF_HOSTNAMES`, not the
+  `snowflake.localhost.localstack.cloud` DNS trick LocalStack's own docs
+  lead with.** That DNS name is a public entry that resolves to `127.0.0.1`
+  for *host-machine* tools (SnowSQL, DBeaver, a Python script run outside
+  Docker) — it does not resolve to the `localstack-snowflake` container from
+  *another* container on the same docker-compose network. The fix, taken
+  from LocalStack's own `localstack-samples/localstack-snowflake-samples`
+  "multi-container" example: set the `localstack-snowflake` service's
+  hostname config to `localstack-snowflake`, then connect from the backend
+  using that plain docker-compose service name as the `host` instead of the
+  public DNS name. `backend/src/snowflakeClient.js` and `snowflake-init/init.js`
+  both do this. **The sample's own env var for this, `SF_HOSTNAME_REGEX`
+  (a regex pattern), turned out to be silently deprecated in the LocalStack
+  version this was tested against** — confirmed live: the container logs
+  `SF_HOSTNAME_REGEX is deprecated and no longer supported; use
+  SF_HOSTNAMES (comma-separated list) instead` and falls back to the
+  default `snowflake.localhost.localstack.cloud` hostname only, ignoring
+  the regex entirely. The symptom was *not* an obvious failure: the mock
+  kept returning HTTP 200 on every `POST /session/v1/login-request`, but
+  `snowflake-sdk`'s `connect()` callback never fired — repeated
+  login-request 200s at growing intervals in the container's logs is the
+  SDK's own retry loop silently re-attempting a "successful" login it
+  never considered complete, since the response didn't establish a session
+  the client recognized. Fixed by switching to `SF_HOSTNAMES:
+  localstack-snowflake` (exact hostname, comma-separated for multiple, no
+  regex) — confirmed live this resolved both the hostname config log line
+  (now correctly `hostnames=['localstack-snowflake']`) and the hang.
+- **`snowflake-sdk`'s `host`/`port`/`protocol` connection options are what
+  make the above possible** — `host: 'localstack-snowflake', port: 4566,
+  protocol: 'http'` — plain HTTP, no TLS, matching how the SQS side talks to
+  `localstack:4566` unencrypted. `account`/`username`/`password` are all
+  hardcoded to `'test'` for the mock (same "some value is required, none of
+  them are checked" reasoning as `sqsClient.js`'s localstack credentials).
+- **The mock's database/table are provisioned by a one-shot
+  `snowflake-mock-init` service (`snowflake-init/`), not by
+  `snowflakeClient.js`** — same "provisioning is infra's job, not the
+  integration layer's" pattern as `localstack-init` for SQS. It's a small
+  standalone Node project (own `package.json`/`Dockerfile`, not part of
+  `backend/`) that runs `CREATE DATABASE IF NOT EXISTS mokapi_demo`, then
+  `CREATE TABLE IF NOT EXISTS mokapi_demo.PUBLIC.<SNOWFLAKE_TABLE>`, then
+  seeds two default rows (`Nathan Schlechte, Green` and
+  `Ashley Schlechte, Blue`) *only if the table is empty* — a `SELECT
+  COUNT(*)` check first, since `localstack-snowflake` has no volume mount
+  (in-memory only, see below) and this script re-runs on every `docker
+  compose up`; a plain `INSERT` without that guard would duplicate the seed
+  rows on every restart. Gated on `localstack-snowflake`'s healthcheck via
+  `depends_on: condition: service_healthy`, then exits.
+  `MOCK_DATABASE`/`MOCK_SCHEMA` are hardcoded
+  constants duplicated in both `snowflake-init/init.js` and
+  `backend/src/snowflakeClient.js` (can't share a module — separate
+  containers/npm installs) — keep them in sync by hand if either changes.
+  Not user-configurable, unlike the real side's `SNOWFLAKE_DATABASE`/
+  `SNOWFLAKE_SCHEMA`, because this database only ever exists inside the
+  ephemeral mock.
+- **`snowflake-sdk`'s own `retryTimeout` connection option cannot be used to
+  fail fast, and this bit us during live verification.** Its default is 300
+  (seconds), and the SDK clamps any lower value back up to 300 via
+  `Math.max(300, yourValue)` (confirmed against `connection_config.js` in
+  `snowflakedb/snowflake-connector-nodejs`) — so `retryTimeout: 5` silently
+  becomes `300` anyway. Confirmed live: with `localstack-snowflake` down,
+  the very first "Loading…" on the Snowflake tab sat there for the full 5
+  minutes before erroring, and the backend log for that attempt read
+  `connection failed after 254114.4 milliseconds`. The fix,
+  `connectWithTimeout()` in `snowflakeClient.js`, wraps `connection.connect()`
+  in its own `Promise.race`-style timeout (`CONNECT_TIMEOUT_MS = 8000`,
+  calling `connection.destroy()` and rejecting if it fires first) — this is
+  an application-level timeout layered on top of the SDK, not a
+  configuration of the SDK's own retry behavior. If you ever see a Snowflake
+  tab request hang far longer than 8s, this is the first place to check —
+  it likely means a code path is bypassing `getConnection()`/
+  `connectWithTimeout()` and calling `connection.connect()` directly.
+- **A related frontend bug, also only caught live**: the first version of
+  `loadSnowflakeRecords()` in `app.js` left `snowflakeRecords` untouched on
+  a failed fetch, so a failed reload kept showing whatever was on screen
+  before — including an unsaved, never-persisted row added via "+". That
+  made a client-only row look like real server data after a failed refresh.
+  Fixed by clearing `snowflakeRecords = []` in the `catch` block before
+  `renderSnowflakeTable()` runs. Worth remembering if the "no records" empty
+  state ever seems to flicker between real content and empty on a flaky
+  connection — that's the by-design behavior of this fix, not a rendering
+  bug.
+- **A third frontend bug, also only caught live, once real Snowflake
+  credentials were available to test against**: `loadSnowflakeRecords()`
+  calls weren't sequenced, so switching Source (or clicking Filter/Refresh/
+  Clear) again before a prior request finished started a second,
+  independent request with nothing cancelling the first. Confirmed live:
+  switching from Localstack to Snowflake (real) while the mock's request
+  was still in its 8s connect-timeout window showed the real source's fast
+  result correctly at first, then had it silently overwritten ~7 seconds
+  later when the mock's slower, now-stale request finally settled — a
+  classic out-of-order-async bug. Fixed with a monotonic `snowflakeRequestId`
+  counter: each call captures its own id, and both the `catch` block and
+  the final `renderSnowflakeTable()` call bail out early if a newer request
+  has since started. Any future change to `loadSnowflakeRecords()` should
+  preserve this guard — it's easy to lose if the function is refactored to
+  extract its status-update logic into a helper.
+- **Query syntax changes made from the original spec, and why**: all four
+  queries (`SELECT`/`INSERT`/`UPDATE`/`DELETE`) use `snowflake-sdk`'s
+  `binds` array with `?` placeholders instead of the `'${placeholder}'`
+  string-interpolation shown in the original spec — parameterized binds
+  avoid SQL injection and are `snowflake-sdk`'s documented way to pass
+  values, whereas string-interpolating user input directly into SQL text
+  would be a real vulnerability once wired to an HTTP endpoint. Separately,
+  the `UPDATE` query's `WHERE` clause used `second_name` in the original
+  spec, a typo — the table only has `last_name` — fixed to `last_name` in
+  `updateRecord()`.
+- **The frontend's "Filter only affects the next query" behavior is a
+  literal reading of the spec, not a bug**: `loadSnowflakeRecords()` takes
+  an optional `firstNameFilter` argument used only by the Filter form's
+  submit handler — every other trigger (Refresh, Clear, and the reload
+  after every successful Save/Delete) calls it with no argument, i.e.
+  unfiltered. So a filtered result set stays filtered only until the next
+  manual action. **Clear** exists specifically to reset the First Name
+  field and reload unfiltered in one click, without needing to blank the
+  field and hit Filter again. If the "revert on any other action" part is
+  ever surprising in practice, the fix is tracking the "current filter" as
+  state and having Refresh reuse it instead of always clearing it.
+- **There is deliberately no automatic polling** — an earlier version had a
+  5s `setInterval` auto-refresh with a small timing-bar progress indicator
+  (paused via a `.paused` class + `animation-play-state` while a row was
+  selected, to avoid clobbering an in-progress edit). That was removed in
+  favor of manual-only refresh (the **Refresh** button) — every action that
+  changes data (Save/Delete) still triggers its own reload, so the table
+  only goes stale between an external change (e.g. a hand-edited row) and
+  the next manual Refresh. If auto-refresh is ever reintroduced, the
+  pause-while-selected guard (`snowflakeSelectedIndex === null` before
+  fetching) is the thing to bring back first — without it, a background
+  refresh will silently discard an unsaved in-progress edit.
+- **The Save/Delete icon buttons live inside the table itself, in a 4th
+  column** (`<td class="snowflake-actions-cell">`, one per row, empty
+  unless that row is selected) — not a floating toolbar positioned outside
+  the table. This replaced an earlier version that absolutely-positioned a
+  toolbar at `left: 100%` relative to a wrapper div, which needed
+  `getBoundingClientRect()` math on every selection change and a window
+  resize listener to stay aligned with the selected row, and had to work
+  around `.table-wrapper`'s `overflow-x: auto` clipping content outside its
+  bounds. The in-table version gets row alignment for free from normal
+  table layout instead. Mechanically: `snowflakeSaveRowBtn`/
+  `snowflakeDeleteRowBtn` are two DOM elements created once (not per-row,
+  not cloned) with their click listeners attached at creation — selecting a
+  row moves them (`appendChild`, which re-parents rather than duplicates)
+  into that row's actions cell; deselecting or any full re-render calls
+  `.remove()` on both first. Since `.remove()` is a no-op when a node has no
+  parent, the same call safely handles "was in row 2, now nowhere" and "was
+  nowhere, still nowhere." Combined with the earlier
+  `snowflakeRecords.length === 0` guard in `selectSnowflakeRow()`, this is
+  also what keeps the buttons from ever rendering when the table is empty
+  — there's no row to move them into.
+- **Three separate layout/CSS bugs in the cell-editing UI, all only caught
+  live, in this order — worth knowing the history if the styling ever gets
+  touched again:**
+  1. **Specificity**: `.cell-edit-input` (the input swapped into a cell on
+     double-click) originally didn't override the page's generic
+     `input[type="text"], ... { padding: 0.5rem 0.6rem; border: 1px solid
+     var(--border); font-size: 1rem; ... }` rule from the top of
+     `styles.css` — a bare class selector (specificity 0,1,0) loses to that
+     rule's attribute selector (`input[type="text"]`, specificity 0,1,1)
+     regardless of which one comes later in the file. Confirmed live: the
+     cell measurably grew (40.66px → 56px tall) the moment editing started.
+     Fixed by qualifying the selector as `input.cell-edit-input`
+     (specificity 0,1,1, ties the generic rule, wins on source order).
+  2. **Table auto-layout width instability**: even after fixing the height,
+     the *width* of the column being edited still jumped (confirmed live:
+     163px → 272px, stealing space from the other columns) — an `<input>`'s
+     own intrinsic preferred width factors into the table's automatic
+     column-width algorithm regardless of the input's own
+     `width: 100%`/`min-width: 0`. An attempted fix — capturing the cell's
+     current pixel width in JS and setting it as the input's explicit
+     inline width before inserting it — still didn't stop the reflow.
+  3. **The actual fix**: `#snowflake-table { table-layout: fixed; }` plus
+     an explicit `<colgroup>` in `index.html` (26%/26%/30%/18%) locks
+     column widths from that declaration instead of ever recalculating them
+     from cell content — confirmed live, both height and width now stay
+     byte-identical before/after entering edit mode, for any cell. The
+     `<td>`/`<th>` also got `overflow: hidden; text-overflow: ellipsis;` as
+     a consequence — fixed layout means a value longer than its column
+     truncates with an ellipsis instead of forcing the column wider;
+     confirmed live the underlying value (`snowflakeRecords[i][field]`) is
+     still captured in full, only the on-screen text is visually
+     shortened. If a future change needs a 5th column or different
+     proportions, update the `<colgroup>` widths, not just the `<th>`s —
+     with `table-layout: fixed` the `<colgroup>` (or first-row cell widths,
+     absent one) is the *only* thing that determines column widths.
+- **Row background lives on the `<tr>` (`.snowflake-row`), not on
+  individual `<td>`s** — an earlier per-cell-background version (shading
+  just the three editable columns) caused two visible bugs the user
+  flagged directly: the shade stopped short of the row's right edge
+  (the actions column had no background of its own, so it looked like a
+  seam), and hover/selected only visibly changed whichever column *didn't*
+  have its own background override, since a `<td>`'s own background paints
+  over its parent `<tr>`'s wherever both exist. Moving the background to
+  one property on one element (the `<tr>`) fixes both: it always spans the
+  full row, and hover/selected cleanly replace it since nothing underneath
+  is fighting for the same pixels. The actively-edited cell still gets its
+  own distinct call-out via the input's `outline` (not `background`,
+  and not `border` — outline never participates in box sizing/layout, so
+  it can highlight the cell without risking reintroducing bug #1 above) —
+  see `--editing-bg`/`--accent` usage in `input.cell-edit-input`.
+- **The preset buttons live in a `<fieldset>` with a `<legend>Presets</legend>`**,
+  not a plain `<div>` — gets a labeled, bordered container for free from
+  semantic HTML instead of hand-building one, styled via
+  `.snowflake-preset-group` to match this app's existing border/radius
+  language rather than the browser's default fieldset look.
+- **All three preset buttons ("Kung Fu Panda", "Randomize", "Another
+  Schlechte", top to bottom) reuse the exact same code path as "+"** — a
+  shared `addSnowflakeRow(overrides)` helper pushes `{ firstName: '',
+  lastName: '', favoriteColor: '', ...overrides, original: null, isNew:
+  true }`, so all four controls produce an identical kind of row
+  (client-side only, selected, nothing sent to the server until the user
+  clicks the save icon themselves) and differ only in which fields
+  `overrides` pre-fills:
+  - **"Kung Fu Panda"** → `{ firstName: 'Jack', lastName: 'Black',
+    favoriteColor: 'White' }` — Po is voiced by Jack Black, and pandas are
+    black *and* white, so first+last name spell out the actor's real name
+    while favoriteColor picks up the panda's other color instead of
+    repeating "Black". A 3-field pun, suggested as a replacement for an
+    initial 2-field version (`firstName: 'Jack', favoriteColor: 'Black'`,
+    last name left blank) and confirmed as the preferred version.
+  - **"Randomize"** picks one random value per field from three static
+    arrays (`SNOWFLAKE_RANDOM_FIRST_NAMES`/`_LAST_NAMES`/`_COLORS` in
+    `app.js`, deliberately simple top-level arrays — edit them directly to
+    change the pool, no config file or build step involved). First names
+    are the SSA's reported top 10 boys' + top 10 girls' names for 2025
+    (ssa.gov/oact/babynames); last names are the 10 most common US
+    surnames per the 2020 Census
+    (census.gov/library/stories/2026/04/2020-census-names-data.html);
+    colors are just a reasonable hand-picked list, not sourced from
+    anything.
+  - **"Another Schlechte"** → `{ firstName: 'No', lastName: 'Way' }` — an
+    earlier version instead set `{ lastName: 'Schlechte', favoriteColor:
+    'Green' }`; changed on request, and the button's label no longer
+    literally matches what it fills in (a deliberate choice, not a stale
+    label left behind by accident).
+- **A row with unsaved changes gets flagged once it's no longer selected**
+  — `isSnowflakeRowDirty()` treats any `isNew: true` row (never saved) as
+  dirty unconditionally, and any existing row as dirty if its current
+  `firstName`/`lastName`/`favoriteColor` differ from `record.original`
+  (which now captures all three fields as loaded, not just the
+  `firstName`/`lastName` the UPDATE/DELETE WHERE clause needs — extended
+  specifically to make this comparison possible). `updateSnowflakeDirtyHighlights()`
+  re-applies the `.dirty` class to every row *except* the currently
+  selected one on every selection change, and reuses `--editing-bg` (the
+  same amber as the actively-edited cell) rather than a new color, so
+  "amber" consistently means "has changes you haven't saved" whether
+  that's the one cell you're typing into or a whole row you've since
+  clicked away from. Deliberately does *not* fire on every keystroke —
+  only on selection change — since the point is warning about data that
+  would be lost by navigating away, not live-validating as you type.
+- **A real data-loss bug, caught live: `loadSnowflakeRecords()` used to
+  wholesale-replace `snowflakeRecords` with the server's response on every
+  reload** — including the automatic reload after a successful Save/Delete.
+  Confirmed live: adding 4 unsaved rows, saving just one, and reload wiped
+  out the other 3, since only the just-saved row (now real) and whatever
+  was already on the server came back in that response; the 3 still-local
+  rows were never part of it. Fixed by having `loadSnowflakeRecords()`
+  merge the fresh server response with `previousRecords.filter(isSnowflakeRowDirty)`
+  — any row still genuinely unsaved rides along across the reload instead
+  of being silently discarded. This applies to *every* reload path
+  (Refresh/Filter/Clear/switching Source/post-Save/post-Delete), not just
+  the one that was reported, since they all funnel through this one
+  function. Two callers need to cooperate for this to not create a stale
+  duplicate of the row they just persisted: `saveSelectedSnowflakeRow()`
+  updates `record.original` and clears `record.isNew` *before* calling
+  `loadSnowflakeRecords()` (so the just-saved row reads as clean and gets
+  excluded from the merge — the fresh copy from the server is what
+  survives instead), and `deleteSelectedSnowflakeRow()` splices the row out
+  of `snowflakeRecords` before reloading (so a deleted-but-previously-dirty
+  row doesn't get resurrected by the merge). The failed-reload path
+  (`catch` block) was adjusted the same way — instead of clearing to `[]`,
+  it now keeps `previousRecords.filter(isSnowflakeRowDirty)`, dropping only
+  the previously-loaded *clean* rows (now an unconfirmed cache of server
+  state) while keeping local-only work intact. Any future change to
+  `loadSnowflakeRecords()`, `saveSelectedSnowflakeRow()`, or
+  `deleteSelectedSnowflakeRow()` needs to preserve this clean-before-reload
+  handshake, or this bug comes back.
+- **The Presets `<fieldset>` needed a hand-tuned `margin-top: 24px` to
+  visually align with the table's column headers** — a `<legend>` straddles
+  its fieldset's top border by design, which extends the *element's own
+  bounding box* that far above the visible border line. Flexbox
+  `align-items: flex-start` (in `.snowflake-table-row`) aligns that
+  extended box against the table wrapper, which visually lines the legend
+  text up with the headers instead of the fieldset's actual visible box.
+  Confirmed live the 24px margin brings the two into exact alignment
+  (0px difference in `getBoundingClientRect().top`). This value tracks the
+  legend's rendered height (`font-size: 0.85rem` + its line-height) — if
+  that font-size ever changes, re-measure rather than assuming 24px still
+  holds.
+
 ## Scenario data flow
 
 1. UI form (`frontend/index.html` + `app.js`) → `PUT /api/scenarios/:city`.
@@ -255,13 +589,17 @@ step.
   tab's structure.
 - **Ports**: mokapi dashboard/mail-API is 8080, mock weather API is 8090
   (set via the `servers` entry in `openapi.yaml`), mock SMTP is 2525 (set in
-  `mail.yaml`), localstack SQS edge is 4566, backend/UI is 3000. These are
-  host-side mappings only, overridable per-checkout via `BACKEND_PORT`,
-  `MOKAPI_DASHBOARD_PORT`, `MOKAPI_API_PORT`, `MOKAPI_SMTP_PORT`,
-  `LOCALSTACK_PORT` in `.env` (see `docker-compose.yml`) — this is what lets
-  multiple git worktrees run their stacks concurrently. Container-internal
-  traffic (e.g. backend reaching mokapi at `http://mokapi:8090/current`,
-  `mokapi:2525` for SMTP, or `localstack:4566` for SQS) uses the container
+  `mail.yaml`), localstack SQS edge is 4566, localstack-snowflake edge is
+  4567 host-side (still 4566 container-internal — only the host mapping
+  differs, to avoid colliding with the SQS localstack service's own 4566),
+  backend/UI is 3000. These are host-side mappings only, overridable
+  per-checkout via `BACKEND_PORT`, `MOKAPI_DASHBOARD_PORT`,
+  `MOKAPI_API_PORT`, `MOKAPI_SMTP_PORT`, `LOCALSTACK_PORT`,
+  `SNOWFLAKE_LOCALSTACK_PORT` in `.env` (see `docker-compose.yml`) — this is
+  what lets multiple git worktrees run their stacks concurrently.
+  Container-internal traffic (e.g. backend reaching mokapi at
+  `http://mokapi:8090/current`, `mokapi:2525` for SMTP, `localstack:4566`
+  for SQS, or `localstack-snowflake:4566` for Snowflake) uses the container
   port and is unaffected by these overrides.
 
 ## Working in a git worktree
@@ -271,8 +609,8 @@ asked, whenever you set up a new worktree for this repo** (e.g. right after
 `git worktree add`, before the first `docker compose up` in that worktree).
 It creates `.env` from `.env.example` if missing and assigns that worktree a
 non-colliding `BACKEND_PORT`/`MOKAPI_DASHBOARD_PORT`/`MOKAPI_API_PORT`/
-`MOKAPI_SMTP_PORT`/`LOCALSTACK_PORT` based on its position in `git worktree
-list`. Skipping this is the main way a
+`MOKAPI_SMTP_PORT`/`LOCALSTACK_PORT`/`SNOWFLAKE_LOCALSTACK_PORT` based on its
+position in `git worktree list`. Skipping this is the main way a
 second worktree's `docker compose up` fails with "port is already
 allocated" against a stack still running in another worktree (including the
 primary checkout). The script is idempotent — safe to re-run, and a no-op
@@ -441,3 +779,20 @@ actually run live versus what's still inferred from shared code.
   without also restarting `backend`), but it's a manual step, not
   something the app retries on its own. This was a deliberate trade against
   an earlier self-healing version of `sqsClient.js`.
+- No formal primary key on the `person` table — `first_name` + `last_name`
+  are treated as one by the UI/queries (an update or delete could match more
+  than one row if they collide), a known, accepted limitation per the
+  original requirements rather than something to harden.
+- Real Snowflake auth is username/password only, no key-pair or OAuth —
+  matches this repo's existing pattern for "the one real external
+  credential this tab needs" (see `GMAIL_USER`/`GMAIL_APP_PASSWORD` for
+  Email, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for AWS). Requires
+  password auth to be enabled on the Snowflake user; key-pair auth would be
+  the fix if that's ever a blocker.
+- No pagination on the Snowflake tab's table — every source/filter query
+  returns and renders the full result set. Fine for a demo-sized `person`
+  table; would need a `LIMIT`/cursor if this table ever grew large.
+- Filtering by First Name is intentionally not "sticky" — see "Snowflake
+  mocking facts" above. This was a literal reading of the original
+  requirements, not an oversight; flagged there as the first thing to
+  revisit if it's surprising in practice.
