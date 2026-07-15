@@ -27,6 +27,53 @@ services:
       timeout: 3s
       retries: 10
 
+  # LocalStack for Snowflake is a *separate paid product* from the base
+  # localstack image above (SQS, etc.) — different Docker image, different
+  # licensing, even though it reuses the same LOCALSTACK_AUTH_TOKEN env var
+  # here (see LOCALSTACK_AUTH_TOKEN in .env.example: your token must be
+  # entitled to LocalStack for Snowflake specifically, e.g. via its 30-day
+  # free trial, or this container exits on the same kind of license check
+  # the SQS localstack container does).
+  localstack-snowflake:
+    image: localstack/snowflake:latest
+    ports:
+      - "${SNOWFLAKE_LOCALSTACK_PORT:-4567}:4566"
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      # Lets the backend/init containers reach this service by its plain
+      # docker-compose service name ("localstack-snowflake") instead of the
+      # public snowflake.localhost.localstack.cloud DNS trick the docs use
+      # for host-machine access, which doesn't resolve to this container
+      # from inside another one. Verified against localstack's own
+      # multi-container sample (localstack-samples/localstack-snowflake-samples).
+      # SF_HOSTNAME_REGEX (a regex pattern) is what that sample uses, but as
+      # of this LocalStack version it logs "deprecated and no longer
+      # supported" and silently falls back to the default hostname only —
+      # confirmed live this broke the mock (login-request kept returning
+      # 200 but the client never considered the session established,
+      # retrying forever). SF_HOSTNAMES (exact, comma-separated, no regex)
+      # is the supported replacement.
+      SF_HOSTNAMES: localstack-snowflake
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: creates the mock database/table localstack-snowflake serves,
+  # then exits — same "provisioning is an infra concern, not the
+  # integration layer's job" reasoning as localstack-init below, applied to
+  # Snowflake. See snowflake-init/init.js.
+  snowflake-mock-init:
+    build: ./snowflake-init
+    depends_on:
+      localstack-snowflake:
+        condition: service_healthy
+    environment:
+      SNOWFLAKE_MOCK_HOST: localstack-snowflake
+      SNOWFLAKE_MOCK_PORT: 4566
+      SNOWFLAKE_TABLE: ${SNOWFLAKE_TABLE:-person}
+
   # One-shot: creates the SQS queue localstack serves, then exits. Queue
   # provisioning lives here (infra), not in backend/src/sqsClient.js
   # (integration layer) — the backend only ever resolves an existing queue
@@ -70,17 +117,28 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       AWS_REGION: ${AWS_REGION:-}
+      SNOWFLAKE_TABLE: ${SNOWFLAKE_TABLE:-person}
+      SNOWFLAKE_MOCK_HOST: localstack-snowflake
+      SNOWFLAKE_MOCK_PORT: 4566
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USERNAME: ${SNOWFLAKE_USERNAME:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-}
+      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-PUBLIC}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
     volumes:
       - ./frontend:/app/frontend:ro
       - ./mokapi:/mokapi-data
     depends_on:
-      # Deliberately NOT depends_on localstack-init here (even though it's
-      # what actually provisions the AWS tab's local queue) — backend must
-      # keep starting cleanly regardless of whether localstack ever becomes
-      # usable (e.g. no LOCALSTACK_AUTH_TOKEN set), the same way the REST
-      # and Email tabs work independently of whether their own credentials
-      # are configured. If localstack-init hasn't finished yet, the AWS
-      # tab's Localstack option just errors until it does — see
-      # backend/src/sqsClient.js's "queue does not exist" message.
+      # Deliberately NOT depends_on localstack-init/snowflake-mock-init here
+      # (even though they're what actually provision the AWS/Snowflake tabs'
+      # local data) — backend must keep starting cleanly regardless of
+      # whether localstack ever becomes usable (e.g. no LOCALSTACK_AUTH_TOKEN
+      # set, or a token not entitled to LocalStack for Snowflake), the same
+      # way the REST and Email tabs work independently of whether their own
+      # credentials are configured. If an init service hasn't finished yet,
+      # that tab's mock option just errors until it does.
       - mokapi
       - localstack
+      - localstack-snowflake

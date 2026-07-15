@@ -6,6 +6,7 @@ import { normalizeWeatherResponse } from './src/normalize.js'
 import { listScenarios, upsertScenario, deleteScenario } from './src/scenarioStore.js'
 import { sendEmail, fetchMokapiInboxMessage } from './src/emailClient.js'
 import { sendMessage, fetchLocalstackMessages } from './src/sqsClient.js'
+import { listRecords, insertRecord, updateRecord, deleteRecord } from './src/snowflakeClient.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -115,6 +116,90 @@ app.get('/api/aws/localstack-inbox', async (req, res) => {
         res.json(messages.length > 0 ? { status: 'found', messages, receivedNew } : { status: 'empty' })
     } catch (err) {
         res.status(502).json({ status: 'error', errorInfo: `Could not reach localstack SQS: ${err.message}` })
+    }
+})
+
+function isValidSnowflakeSource(source) {
+    return source === 'localstack' || source === 'snowflake'
+}
+
+app.get('/api/snowflake/records', async (req, res) => {
+    const source = req.query.source
+    const firstName = String(req.query.firstName || '').trim()
+
+    if (!isValidSnowflakeSource(source)) {
+        return res.status(400).json({ status: 'error', errorInfo: 'source must be "localstack" or "snowflake"' })
+    }
+
+    try {
+        const records = await listRecords(source, firstName || undefined)
+        res.json({ status: 'success', records })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach ${source} Snowflake: ${err.message}` })
+    }
+})
+
+app.post('/api/snowflake/records', async (req, res) => {
+    const source = req.body?.source
+    const firstName = String(req.body?.firstName || '').trim()
+    const lastName = String(req.body?.lastName || '').trim()
+    const favoriteColor = String(req.body?.favoriteColor || '').trim()
+
+    if (!isValidSnowflakeSource(source)) {
+        return res.status(400).json({ status: 'error', errorInfo: 'source must be "localstack" or "snowflake"' })
+    }
+    if (!firstName || !lastName || !favoriteColor) {
+        return res.status(400).json({ status: 'error', errorInfo: 'firstName, lastName, and favoriteColor are required' })
+    }
+
+    try {
+        await insertRecord(source, { firstName, lastName, favoriteColor })
+        res.json({ status: 'success' })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach ${source} Snowflake: ${err.message}` })
+    }
+})
+
+app.put('/api/snowflake/records', async (req, res) => {
+    const source = req.body?.source
+    const oldFirstName = String(req.body?.oldFirstName || '').trim()
+    const oldLastName = String(req.body?.oldLastName || '').trim()
+    const firstName = String(req.body?.firstName || '').trim()
+    const lastName = String(req.body?.lastName || '').trim()
+    const favoriteColor = String(req.body?.favoriteColor || '').trim()
+
+    if (!isValidSnowflakeSource(source)) {
+        return res.status(400).json({ status: 'error', errorInfo: 'source must be "localstack" or "snowflake"' })
+    }
+    if (!oldFirstName || !oldLastName || !firstName || !lastName || !favoriteColor) {
+        return res.status(400).json({ status: 'error', errorInfo: 'oldFirstName, oldLastName, firstName, lastName, and favoriteColor are required' })
+    }
+
+    try {
+        await updateRecord(source, { oldFirstName, oldLastName, firstName, lastName, favoriteColor })
+        res.json({ status: 'success' })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach ${source} Snowflake: ${err.message}` })
+    }
+})
+
+app.delete('/api/snowflake/records', async (req, res) => {
+    const source = req.query.source
+    const firstName = String(req.query.firstName || '').trim()
+    const lastName = String(req.query.lastName || '').trim()
+
+    if (!isValidSnowflakeSource(source)) {
+        return res.status(400).json({ status: 'error', errorInfo: 'source must be "localstack" or "snowflake"' })
+    }
+    if (!firstName || !lastName) {
+        return res.status(400).json({ status: 'error', errorInfo: 'firstName and lastName are required' })
+    }
+
+    try {
+        await deleteRecord(source, { firstName, lastName })
+        res.json({ status: 'success' })
+    } catch (err) {
+        res.status(502).json({ status: 'error', errorInfo: `Could not reach ${source} Snowflake: ${err.message}` })
     }
 })
 

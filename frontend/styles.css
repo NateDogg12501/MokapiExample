@@ -13,6 +13,7 @@
   --error-bg: #fef2f2;
   --mono-bg: #eef0f3;
   --mono-text: #1a1d21;
+  --editing-bg: #fef9c3;
 }
 
 * { box-sizing: border-box; }
@@ -402,6 +403,226 @@ td button {
   font-style: italic;
 }
 
+/* --- Snowflake tab ----------------------------------------------------- */
+
+.snowflake-source-segment {
+  max-width: 420px;
+  margin-bottom: 1rem;
+}
+
+.snowflake-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: none;
+}
+
+.inline-form label {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.inline-form input {
+  width: 12rem;
+}
+
+.inline-form button {
+  margin-top: 0;
+}
+
+#snowflake-refresh {
+  margin-top: 0;
+}
+
+.snowflake-add-remove-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.icon-button {
+  margin-top: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.icon-button:disabled {
+  background: var(--border);
+}
+
+/* Fixed layout + an explicit <colgroup> (in index.html) locks column
+   widths in from the start, instead of the default auto layout
+   recalculating them from cell content on every DOM change — confirmed
+   live this was otherwise necessary: even pinning an explicit pixel width
+   on the edit <input> itself (an earlier attempt) didn't stop the table's
+   auto-layout algorithm from still reshuffling column widths on entering
+   edit mode. Cells still use `white-space: nowrap` (from the generic
+   `th, td` rule), so unusually long content now truncates with an ellipsis
+   instead of forcing the column wider. */
+#snowflake-table {
+  table-layout: fixed;
+}
+
+#snowflake-table td,
+#snowflake-table th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Background lives on the <tr>, not on individual <td>s — a per-cell
+   background (the previous approach) paints over the row's own background
+   only in the columns that have one, so hover/selected only visibly
+   changed the one column (usually the actions cell) that didn't have its
+   own override, and the shade stopped short of the row's right edge
+   instead of spanning it. One background on one element avoids both: it
+   always covers the full row, and hover/selected cleanly replace it since
+   there's nothing underneath fighting for the same pixels. */
+.snowflake-row {
+  cursor: pointer;
+  background: var(--mono-bg);
+}
+
+.snowflake-row:hover {
+  background: var(--bg);
+}
+
+.snowflake-row.selected {
+  background: var(--success-bg);
+  outline: 1px solid var(--success);
+  outline-offset: -1px;
+}
+
+/* A row with unsaved edits (or a never-saved "+"/preset row), once it's no
+   longer selected — warns that Refresh/Filter/Clear/switching Source would
+   silently lose it. Reuses --editing-bg rather than a new color: amber
+   already means "has changes you haven't saved" for the actively-edited
+   cell, so a dirty-but-unselected row uses the same color family instead
+   of introducing a second, competing "something's different here" cue.
+   Never coexists with .selected — updateSnowflakeDirtyHighlights() in
+   app.js only applies .dirty to rows other than the selected one. */
+.snowflake-row.dirty {
+  background: var(--editing-bg);
+}
+
+/* No padding/border/font-size of its own (beyond what the td already has)
+   so entering edit mode doesn't change the cell's size at all — only color
+   changes, to call out which cell is actively being edited. Selector is
+   `input.cell-edit-input`, not just `.cell-edit-input` — needs to out-
+   specificity the earlier `input[type="text"]` rule (an attribute selector
+   has the same specificity weight as a class, so a bare class here loses to
+   it and silently keeps that rule's padding/border/font-size, which is
+   exactly what grew the cell when editing started — confirmed live: cell
+   height changed from 40.66px to 56px before this fix). The outline (not
+   border) is what makes the edited cell pop against the row's own
+   background — outline never participates in box sizing/layout, so it
+   can't reintroduce the same "grows on edit" bug. */
+input.cell-edit-input {
+  display: block;
+  width: 100%;
+  /* Without this, the table's auto column-width algorithm sizes the whole
+     column (all rows, not just the one being edited) to this input's
+     default intrinsic width (~20 characters per the UA stylesheet) instead
+     of the column's actual content width — confirmed live: a cell visibly
+     widened from 163px to 272px on entering edit mode. min-width: 0 lets
+     it shrink to match the column instead of dictating it. */
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  font: inherit;
+  color: inherit;
+  background: var(--editing-bg);
+}
+
+.snowflake-actions-cell {
+  white-space: nowrap;
+}
+
+/* 62.5% of the base .icon-button size (2.25rem/18px) — the original 50%
+   (1.125rem/9px) sized up another 25% per feedback, same ratio throughout.
+   Buttons are moved into this cell only for the selected row (see
+   selectSnowflakeRow in app.js) — an unselected row's cell is always empty. */
+.snowflake-actions-cell .icon-button {
+  width: 1.40625rem;
+  height: 1.40625rem;
+  vertical-align: middle;
+}
+
+.snowflake-actions-cell .icon-button svg {
+  width: 11.25px;
+  height: 11.25px;
+}
+
+.snowflake-actions-cell .icon-button + .icon-button {
+  margin-left: 0.35rem;
+}
+
+.snowflake-table-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.snowflake-table-row .snowflake-table-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A <fieldset>, not a plain <div> — gets the bordered box + "Presets"
+   label for free, styled to match this app's existing box language
+   (.card/.segment's border+radius) instead of the browser default
+   fieldset look. */
+.snowflake-preset-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  /* A <fieldset>'s <legend> straddles its top border, which pushes the
+     element's own bounding box that much further above the border line
+     than a plain box would sit — flex-start alignment against the table
+     wrapper then lines the *legend* up with the column headers instead of
+     the fieldset's actual border/content. This margin compensates so the
+     visible box (not the legend) lines up with the header row instead. */
+  margin: 24px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.snowflake-preset-group legend {
+  padding: 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.snowflake-preset-group button {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16181d;
@@ -413,5 +634,6 @@ td button {
     --error-bg: #2a1414;
     --mono-bg: #0d0f13;
     --mono-text: #d7dbe0;
+    --editing-bg: #4d4210;
   }
 }

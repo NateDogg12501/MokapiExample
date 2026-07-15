@@ -4,7 +4,8 @@ const tabButtons = document.querySelectorAll('.tab-button')
 const pageSections = {
   rest: document.getElementById('page-rest'),
   email: document.getElementById('page-email'),
-  aws: document.getElementById('page-aws')
+  aws: document.getElementById('page-aws'),
+  snowflake: document.getElementById('page-snowflake')
 }
 
 for (const button of tabButtons) {
@@ -18,6 +19,7 @@ for (const button of tabButtons) {
     for (const [name, section] of Object.entries(pageSections)) {
       section.hidden = name !== target
     }
+    if (target === 'snowflake') activateSnowflakeTab()
   })
 }
 
@@ -425,3 +427,411 @@ awsQueueRefreshBtn.addEventListener('click', async () => {
   awsQueueStatus.textContent = data.status === 'found' ? '' : (data.errorInfo || 'No message captured yet.')
   awsQueueRefreshBtn.disabled = false
 })
+
+// --- Snowflake person records -------------------------------------------
+//
+// Row state shape: { firstName, lastName, favoriteColor, original, isNew }
+// `original` is the {firstName, lastName} the row was loaded with (used as
+// the UPDATE/DELETE WHERE key so a rename doesn't lose the row) — null for
+// a row added locally via "+" that's never been saved. `isNew` distinguishes
+// "Save" meaning INSERT vs UPDATE, and "Delete" meaning "just drop it
+// locally" vs an actual DELETE call.
+
+const snowflakeSourceRadios = document.querySelectorAll('input[name="snowflake-source"]')
+const snowflakeFilterForm = document.getElementById('snowflake-filter-form')
+const snowflakeFilterInput = document.getElementById('snowflake-filter-input')
+const snowflakeFilterSubmit = document.getElementById('snowflake-filter-submit')
+const snowflakeFilterClear = document.getElementById('snowflake-filter-clear')
+const snowflakeRefreshBtn = document.getElementById('snowflake-refresh')
+const snowflakeAddRowBtn = document.getElementById('snowflake-add-row')
+const snowflakeRemoveRowBtn = document.getElementById('snowflake-remove-row')
+const snowflakePresetKungFuPandaBtn = document.getElementById('snowflake-preset-kungfupanda')
+const snowflakePresetRandomizeBtn = document.getElementById('snowflake-preset-randomize')
+const snowflakePresetSchlechteBtn = document.getElementById('snowflake-preset-schlechte')
+const snowflakeStatus = document.getElementById('snowflake-status')
+const snowflakeTableBody = document.getElementById('snowflake-table-body')
+const snowflakeEmptyState = document.getElementById('snowflake-empty-state')
+
+// Static, easily-edited value pools for the "Randomize" preset button.
+// First names: SSA's top 10 boys' + top 10 girls' names for 2025
+// (ssa.gov/oact/babynames). Last names: the 10 most common US surnames per
+// the 2020 Census (census.gov/library/stories/2026/04/2020-census-names-data.html).
+// Colors: not sourced from any dataset, just a reasonable common-colors list.
+const SNOWFLAKE_RANDOM_FIRST_NAMES = [
+  'Liam', 'Noah', 'Oliver', 'Theodore', 'Henry', 'James', 'Elijah', 'Mateo', 'William', 'Lucas',
+  'Olivia', 'Charlotte', 'Emma', 'Amelia', 'Sophia', 'Mia', 'Isabella', 'Evelyn', 'Sofia', 'Eliana'
+]
+const SNOWFLAKE_RANDOM_LAST_NAMES = [
+  'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'
+]
+const SNOWFLAKE_RANDOM_COLORS = [
+  'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink', 'Black', 'White', 'Gray',
+  'Brown', 'Teal', 'Navy', 'Maroon', 'Turquoise', 'Violet', 'Indigo', 'Gold', 'Silver', 'Coral'
+]
+
+function randomSnowflakeValue(list) {
+  return list[Math.floor(Math.random() * list.length)]
+}
+
+// Created once and moved (not cloned) into the selected row's own last
+// column, rather than positioned as a floating toolbar outside the table —
+// keeps them aligned with their row for free via normal table layout, and
+// off-DOM (so never visible) whenever nothing is selected.
+const snowflakeSaveRowBtn = document.createElement('button')
+snowflakeSaveRowBtn.type = 'button'
+snowflakeSaveRowBtn.className = 'icon-button'
+snowflakeSaveRowBtn.title = 'Save row'
+snowflakeSaveRowBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>'
+snowflakeSaveRowBtn.addEventListener('click', () => saveSelectedSnowflakeRow())
+
+const snowflakeDeleteRowBtn = document.createElement('button')
+snowflakeDeleteRowBtn.type = 'button'
+snowflakeDeleteRowBtn.className = 'icon-button'
+snowflakeDeleteRowBtn.title = 'Delete row'
+snowflakeDeleteRowBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></svg>'
+snowflakeDeleteRowBtn.addEventListener('click', () => deleteSelectedSnowflakeRow())
+
+let snowflakeRecords = []
+let snowflakeSelectedIndex = null
+let snowflakeInitialized = false
+
+function getSnowflakeSource() {
+  return document.querySelector('input[name="snowflake-source"]:checked').value
+}
+
+async function fetchSnowflakeRecords(firstNameFilter) {
+  const params = new URLSearchParams({ source: getSnowflakeSource() })
+  if (firstNameFilter) params.set('firstName', firstNameFilter)
+  const res = await fetch(`/api/snowflake/records?${params}`)
+  return res.json()
+}
+
+// Guards against out-of-order responses: switching Source (or clicking
+// Filter/Refresh/Clear again) before a prior request finishes starts a
+// second, independent request with nothing cancelling the first. Without
+// this, a slow-to-fail older request (e.g. the mock's 8s connect timeout)
+// can resolve after a faster newer one and stomp its result — confirmed
+// live: switching from Localstack to Snowflake (real) mid-request showed
+// the real source's fast result, then had it overwritten seconds later by
+// the mock's stale timeout error once that request finally settled.
+let snowflakeRequestId = 0
+
+async function loadSnowflakeRecords(firstNameFilter) {
+  const requestId = ++snowflakeRequestId
+  const previousRecords = snowflakeRecords
+  snowflakeStatus.textContent = 'Loading…'
+  try {
+    const data = await fetchSnowflakeRecords(firstNameFilter)
+    if (requestId !== snowflakeRequestId) return
+    if (data.status !== 'success') throw new Error(data.errorInfo || 'Failed to load records.')
+    const freshRecords = data.records.map((r) => ({
+      firstName: r.firstName,
+      lastName: r.lastName,
+      favoriteColor: r.favoriteColor,
+      // Full snapshot as loaded — used both as the UPDATE/DELETE WHERE key
+      // (firstName/lastName only) and, in full, to detect unsaved edits
+      // (see isSnowflakeRowDirty) so a row with in-progress changes can be
+      // called out once the user selects a different row.
+      original: { firstName: r.firstName, lastName: r.lastName, favoriteColor: r.favoriteColor },
+      isNew: false
+    }))
+    // Reloading (whether from Refresh/Filter/Clear/switching Source, or
+    // automatically after saving/deleting a *different* row) otherwise
+    // wholesale replaces snowflakeRecords with the server's response —
+    // discarding any other row's unsaved edits or never-saved "+"/preset
+    // rows in the process, even though nothing the user did targeted them.
+    // Carrying dirty rows forward across the reload fixes that. Callers
+    // that just persisted a row mark it clean first (see
+    // saveSelectedSnowflakeRow/deleteSelectedSnowflakeRow) so it isn't
+    // re-added here as a stale duplicate of the fresh copy above.
+    const unsavedLocalRecords = previousRecords.filter(isSnowflakeRowDirty)
+    snowflakeRecords = [...freshRecords, ...unsavedLocalRecords]
+    snowflakeStatus.textContent = ''
+  } catch (err) {
+    if (requestId !== snowflakeRequestId) return
+    // Drop previously-loaded clean rows — they're now an unconfirmed cache
+    // of server state, and showing them post-failure would look like real
+    // synced data when it might not be anymore — but keep dirty ones,
+    // since those are legitimately client-only and not something this
+    // failure has any bearing on.
+    snowflakeRecords = previousRecords.filter(isSnowflakeRowDirty)
+    snowflakeStatus.textContent = err.message
+  }
+  renderSnowflakeTable()
+}
+
+function renderSnowflakeTable() {
+  // A full rebuild implicitly detaches the save/delete buttons along with
+  // whatever row they were in — .remove() them explicitly too so their
+  // state doesn't depend on that implicit side effect.
+  snowflakeSaveRowBtn.remove()
+  snowflakeDeleteRowBtn.remove()
+  snowflakeSelectedIndex = null
+  snowflakeRemoveRowBtn.disabled = true
+
+  snowflakeTableBody.textContent = ''
+  snowflakeEmptyState.hidden = snowflakeRecords.length > 0
+
+  snowflakeRecords.forEach((record, index) => {
+    const row = document.createElement('tr')
+    row.className = 'snowflake-row'
+    row.tabIndex = 0
+    row.addEventListener('click', () => toggleSnowflakeRowSelection(index))
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        toggleSnowflakeRowSelection(index)
+      }
+    })
+
+    for (const field of ['firstName', 'lastName', 'favoriteColor']) {
+      const cell = document.createElement('td')
+      cell.textContent = record[field]
+      cell.addEventListener('dblclick', (event) => {
+        event.stopPropagation()
+        selectSnowflakeRow(index)
+        startSnowflakeCellEdit(cell, index, field)
+      })
+      row.appendChild(cell)
+    }
+
+    const actionsCell = document.createElement('td')
+    actionsCell.className = 'snowflake-actions-cell'
+    row.appendChild(actionsCell)
+
+    snowflakeTableBody.appendChild(row)
+  })
+
+  updateSnowflakeDirtyHighlights()
+}
+
+function isSnowflakeRowDirty(record) {
+  if (record.isNew) return true
+  return (
+    record.firstName !== record.original.firstName ||
+    record.lastName !== record.original.lastName ||
+    record.favoriteColor !== record.original.favoriteColor
+  )
+}
+
+// A row with unsaved edits (or a never-saved "+"/preset row) would be
+// silently lost on the next Refresh/Filter/Clear/source switch. That only
+// matters once it's *not* the selected row — while selected, the user is
+// already looking right at it, mid-edit. Called on every selection change
+// so the warning follows the user as they move between rows.
+function updateSnowflakeDirtyHighlights() {
+  for (const [i, row] of [...snowflakeTableBody.children].entries()) {
+    row.classList.toggle('dirty', i !== snowflakeSelectedIndex && isSnowflakeRowDirty(snowflakeRecords[i]))
+  }
+}
+
+function startSnowflakeCellEdit(cell, rowIndex, field) {
+  if (cell.querySelector('input')) return
+  const record = snowflakeRecords[rowIndex]
+  const previousValue = record[field]
+
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = previousValue
+  input.className = 'cell-edit-input'
+
+  cell.textContent = ''
+  cell.appendChild(input)
+  input.focus()
+  input.select()
+
+  const commit = () => {
+    record[field] = input.value.trim()
+    cell.textContent = record[field]
+  }
+
+  input.addEventListener('blur', commit)
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      input.blur()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      input.removeEventListener('blur', commit)
+      cell.textContent = previousValue
+    }
+  })
+}
+
+function toggleSnowflakeRowSelection(index) {
+  if (snowflakeSelectedIndex === index) {
+    clearSnowflakeSelection()
+  } else {
+    selectSnowflakeRow(index)
+  }
+}
+
+function selectSnowflakeRow(index) {
+  if (snowflakeRecords.length === 0) return
+  snowflakeSaveRowBtn.remove()
+  snowflakeDeleteRowBtn.remove()
+  snowflakeSelectedIndex = index
+  for (const [i, row] of [...snowflakeTableBody.children].entries()) {
+    row.classList.toggle('selected', i === index)
+  }
+  snowflakeRemoveRowBtn.disabled = false
+  const actionsCell = snowflakeTableBody.children[index].querySelector('.snowflake-actions-cell')
+  actionsCell.appendChild(snowflakeSaveRowBtn)
+  actionsCell.appendChild(snowflakeDeleteRowBtn)
+  updateSnowflakeDirtyHighlights()
+}
+
+function clearSnowflakeSelection() {
+  snowflakeSaveRowBtn.remove()
+  snowflakeDeleteRowBtn.remove()
+  snowflakeSelectedIndex = null
+  for (const row of snowflakeTableBody.children) row.classList.remove('selected')
+  snowflakeRemoveRowBtn.disabled = true
+  updateSnowflakeDirtyHighlights()
+}
+
+// Shared by "+" and all preset buttons — only the initial field values
+// differ. Matches "+"'s contract: a local-only row, selected but never
+// sent to the server until the user clicks the save icon themselves.
+function addSnowflakeRow(overrides = {}) {
+  snowflakeRecords.push({ firstName: '', lastName: '', favoriteColor: '', ...overrides, original: null, isNew: true })
+  renderSnowflakeTable()
+  selectSnowflakeRow(snowflakeRecords.length - 1)
+}
+
+snowflakeAddRowBtn.addEventListener('click', () => addSnowflakeRow())
+
+// Po (Kung Fu Panda) is voiced by Jack Black — first/last name spell out
+// the actor's real name, favoriteColor picks up the panda's other color
+// rather than repeating "Black".
+snowflakePresetKungFuPandaBtn.addEventListener('click', () => {
+  addSnowflakeRow({ firstName: 'Jack', lastName: 'Black', favoriteColor: 'White' })
+})
+
+snowflakePresetRandomizeBtn.addEventListener('click', () => {
+  addSnowflakeRow({
+    firstName: randomSnowflakeValue(SNOWFLAKE_RANDOM_FIRST_NAMES),
+    lastName: randomSnowflakeValue(SNOWFLAKE_RANDOM_LAST_NAMES),
+    favoriteColor: randomSnowflakeValue(SNOWFLAKE_RANDOM_COLORS)
+  })
+})
+
+snowflakePresetSchlechteBtn.addEventListener('click', () => {
+  addSnowflakeRow({ firstName: 'No', lastName: 'Way' })
+})
+
+async function deleteSelectedSnowflakeRow() {
+  if (snowflakeSelectedIndex === null) return
+  const record = snowflakeRecords[snowflakeSelectedIndex]
+
+  if (record.isNew) {
+    snowflakeRecords.splice(snowflakeSelectedIndex, 1)
+    renderSnowflakeTable()
+    return
+  }
+
+  snowflakeStatus.textContent = 'Deleting…'
+  try {
+    const params = new URLSearchParams({
+      source: getSnowflakeSource(),
+      firstName: record.original.firstName,
+      lastName: record.original.lastName
+    })
+    const res = await fetch(`/api/snowflake/records?${params}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (data.status !== 'success') throw new Error(data.errorInfo || 'Failed to delete record.')
+    // Remove it locally before reloading — otherwise, if it happened to be
+    // "dirty" (edited before being deleted), loadSnowflakeRecords' merge
+    // would carry it right back in as a stale local row.
+    snowflakeRecords.splice(snowflakeSelectedIndex, 1)
+    await loadSnowflakeRecords()
+  } catch (err) {
+    snowflakeStatus.textContent = err.message
+  }
+}
+
+async function saveSelectedSnowflakeRow() {
+  if (snowflakeSelectedIndex === null) return
+  const record = snowflakeRecords[snowflakeSelectedIndex]
+
+  if (!record.firstName || !record.lastName || !record.favoriteColor) {
+    snowflakeStatus.textContent = 'First name, last name, and favorite color are all required.'
+    return
+  }
+
+  snowflakeStatus.textContent = 'Saving…'
+  const source = getSnowflakeSource()
+
+  try {
+    const res = record.isNew
+      ? await fetch('/api/snowflake/records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source,
+            firstName: record.firstName,
+            lastName: record.lastName,
+            favoriteColor: record.favoriteColor
+          })
+        })
+      : await fetch('/api/snowflake/records', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source,
+            oldFirstName: record.original.firstName,
+            oldLastName: record.original.lastName,
+            firstName: record.firstName,
+            lastName: record.lastName,
+            favoriteColor: record.favoriteColor
+          })
+        })
+    const data = await res.json()
+    if (data.status !== 'success') throw new Error(data.errorInfo || 'Failed to save record.')
+    // Mark it clean before reloading — the fresh fetch's copy of this same
+    // row is now the source of truth, and loadSnowflakeRecords' merge only
+    // needs to preserve rows still genuinely unsaved.
+    record.original = { firstName: record.firstName, lastName: record.lastName, favoriteColor: record.favoriteColor }
+    record.isNew = false
+    await loadSnowflakeRecords()
+  } catch (err) {
+    snowflakeStatus.textContent = err.message
+  }
+}
+
+snowflakeRemoveRowBtn.addEventListener('click', deleteSelectedSnowflakeRow)
+
+snowflakeFilterForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const value = snowflakeFilterInput.value.trim()
+  setLoading(snowflakeFilterSubmit, true, 'Filtering…')
+  await loadSnowflakeRecords(value || undefined)
+  setLoading(snowflakeFilterSubmit, false, 'Filter')
+})
+
+snowflakeFilterClear.addEventListener('click', async () => {
+  snowflakeFilterInput.value = ''
+  snowflakeFilterClear.disabled = true
+  await loadSnowflakeRecords()
+  snowflakeFilterClear.disabled = false
+})
+
+snowflakeRefreshBtn.addEventListener('click', async () => {
+  snowflakeRefreshBtn.disabled = true
+  await loadSnowflakeRecords()
+  snowflakeRefreshBtn.disabled = false
+})
+
+for (const radio of snowflakeSourceRadios) {
+  radio.addEventListener('change', () => {
+    snowflakeFilterInput.value = ''
+    loadSnowflakeRecords()
+  })
+}
+
+function activateSnowflakeTab() {
+  if (!snowflakeInitialized) {
+    snowflakeInitialized = true
+    loadSnowflakeRecords()
+  }
+}
